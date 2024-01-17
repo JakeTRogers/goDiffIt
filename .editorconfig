@@ -1,0 +1,18 @@
+root = true
+
+[*]
+charset = utf-8
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.yaml,*.yml]
+indent_size = 2
+indent_style = space
+
+[Makdefile,go.mod,go.sum,*.go,.gitmodules]
+indent_style = tab
+indent_size = 4
+
+[*.{md,Rmd,rst}]
+indent_size = 4
+trim_trailing_whitespace = false
