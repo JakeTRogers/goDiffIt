@@ -22,8 +22,7 @@
                 "EditorConfig.EditorConfig",
                 "golang.go",
                 "streetsidesoftware.code-spell-checker",
-                "yzhang.markdown-all-in-one",
-                "zhuangtongfa.material-theme"
+                "yzhang.markdown-all-in-one"
             ]
         }
     },
