@@ -168,7 +168,7 @@ func (r *results) printSet() error {
 
 var rootCmd = &cobra.Command{
 	Use:     "goDiffIt [fileA] [fileB]",
-	Version: "v1.0.2",
+	Version: "v1.0.3",
 	Short:   "goDiffIt is a CLI tool for comparing files/lists.",
 	Long: `goDiffIt is a CLI tool for comparing files/lists and explaining their differences. It can perform set operations such as
 union, intersection, and difference. This is very helpful for comparing data from different sources, and spotting gaps.
