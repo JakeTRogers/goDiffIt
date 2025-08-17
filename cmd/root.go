@@ -54,7 +54,9 @@ func (fs *fileSet) fileToSet() error {
 	if err != nil {
 		return fmt.Errorf("failed to open file: %w", err)
 	}
-	defer file.Close()
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("failed to close file: %w", err)
+	}
 
 	// add each line to the set
 	scanner := bufio.NewScanner(file)
@@ -168,7 +170,7 @@ func (r *results) printSet() error {
 
 var rootCmd = &cobra.Command{
 	Use:     "goDiffIt [fileA] [fileB]",
-	Version: "v1.0.3",
+	Version: "v1.0.4",
 	Short:   "goDiffIt is a CLI tool for comparing files/lists.",
 	Long: `goDiffIt is a CLI tool for comparing files/lists and explaining their differences. It can perform set operations such as
 union, intersection, and difference. This is very helpful for comparing data from different sources, and spotting gaps.
