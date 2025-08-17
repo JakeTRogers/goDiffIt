@@ -1,3 +1,10 @@
+## v1.0.4 (2025-08-17)
+
+### Fix
+
+- handle file close error in fileToSet function
+- **deps**: bump github.com/spf13/pflag from 1.0.6 to 1.0.7
+
 ## v1.0.3 (2025-06-01)
 
 ### Fix
