@@ -82,6 +82,9 @@ func (fs *fileSet) fileToSet() error {
 		}
 		fs.set.Add(line)
 	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("failed to scan file: %w", err)
+	}
 	return nil
 }
 
