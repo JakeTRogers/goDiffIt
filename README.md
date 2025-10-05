@@ -85,3 +85,46 @@ cherry
 date
 orange
 ```
+
+## Development
+
+### Running Tests
+
+```bash
+go test ./... -v
+```
+
+### Coverage Report
+
+```bash
+go test ./... -coverprofile=coverage.out
+go tool cover -html=coverage.out
+```
+
+### Pre-commit Hooks
+
+This project uses [pre-commit](https://pre-commit.com/) hooks to ensure code quality. The hooks run:
+
+- **go test**: Runs all tests with race detection
+- **go test coverage**: Ensures cmd package maintains ≥85% coverage
+- **golangci-lint**: Comprehensive Go linting
+- **commitizen**: Enforces conventional commit messages
+
+To install pre-commit hooks:
+
+```bash
+# Install pre-commit (if not already installed)
+pip install pre-commit
+
+# Install the git hooks
+pre-commit install --hook-type pre-commit --hook-type commit-msg
+
+# Run hooks manually on all files
+pre-commit run --all-files
+```
+
+The hooks will automatically run before each commit. To skip hooks temporarily:
+
+```bash
+git commit --no-verify
+```
