@@ -1,6 +1,6 @@
 module github.com/JakeTRogers/goDiffIt
 
-go 1.23
+go 1.25
 
 require (
 	github.com/alexandrestein/gods v1.0.1
