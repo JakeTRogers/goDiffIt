@@ -1,3 +1,11 @@
+## v1.0.5 (2025-10-05)
+
+### Fix
+
+- **deps**: bump github.com/spf13/cobra from 1.9.1 to 1.10.1
+- **deps**: bump github.com/spf13/pflag from 1.0.7 to 1.0.10
+- bump Go version from 1.23 to 1.25
+
 ## v1.0.4 (2025-08-17)
 
 ### Fix
