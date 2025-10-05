@@ -54,16 +54,18 @@ func (fs *fileSet) fileToSet() error {
 	if err != nil {
 		return fmt.Errorf("failed to open file: %w", err)
 	}
-	if err := file.Close(); err != nil {
-		return fmt.Errorf("failed to close file: %w", err)
-	}
+	defer func() {
+		if cerr := file.Close(); cerr != nil {
+			l.Err(cerr).Msg("failed to close file")
+		}
+	}()
 
 	// add each line to the set
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
-		line := scanner.Text()
+		line := strings.TrimSpace(scanner.Text())
 		// if line is empty or contains only whitespace, skip it
-		if len(strings.TrimSpace(line)) == 0 {
+		if len(line) == 0 {
 			continue
 		}
 		// convert the line to lowercase if caseSensitive is false
@@ -72,13 +74,16 @@ func (fs *fileSet) fileToSet() error {
 		}
 		// split the line by delimiter and take the first element
 		if strings.Contains(line, delimiter) {
-			line = strings.Split(line, delimiter)[0]
+			line = strings.TrimSpace(strings.Split(line, delimiter)[0])
 		}
 		// split the line by dot and take the first element if ignoreFQDN is set
 		if ignoreFQDN {
-			line = strings.Split(line, ".")[0]
+			line = strings.TrimSpace(strings.Split(line, ".")[0])
 		}
 		fs.set.Add(line)
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("failed to scan file: %w", err)
 	}
 	return nil
 }
@@ -170,7 +175,7 @@ func (r *results) printSet() error {
 
 var rootCmd = &cobra.Command{
 	Use:     "goDiffIt [fileA] [fileB]",
-	Version: "v1.0.5",
+	Version: "v1.0.6",
 	Short:   "goDiffIt is a CLI tool for comparing files/lists.",
 	Long: `goDiffIt is a CLI tool for comparing files/lists and explaining their differences. It can perform set operations such as
 union, intersection, and difference. This is very helpful for comparing data from different sources, and spotting gaps.

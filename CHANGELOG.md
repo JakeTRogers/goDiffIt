@@ -1,3 +1,11 @@
+## v1.0.6 (2025-10-05)
+
+### Fix
+
+- handle scanner errors in fileToSet function
+- trim whitespace from lines in fileToSet function
+- ensure file close is deferred in fileToSet function
+
 ## v1.0.5 (2025-10-05)
 
 ### Fix
