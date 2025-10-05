@@ -54,9 +54,11 @@ func (fs *fileSet) fileToSet() error {
 	if err != nil {
 		return fmt.Errorf("failed to open file: %w", err)
 	}
-	if err := file.Close(); err != nil {
-		return fmt.Errorf("failed to close file: %w", err)
-	}
+	defer func() {
+		if cerr := file.Close(); cerr != nil {
+			l.Err(cerr).Msg("failed to close file")
+		}
+	}()
 
 	// add each line to the set
 	scanner := bufio.NewScanner(file)
