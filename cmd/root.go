@@ -63,9 +63,9 @@ func (fs *fileSet) fileToSet() error {
 	// add each line to the set
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
-		line := scanner.Text()
+		line := strings.TrimSpace(scanner.Text())
 		// if line is empty or contains only whitespace, skip it
-		if len(strings.TrimSpace(line)) == 0 {
+		if len(line) == 0 {
 			continue
 		}
 		// convert the line to lowercase if caseSensitive is false
@@ -74,11 +74,11 @@ func (fs *fileSet) fileToSet() error {
 		}
 		// split the line by delimiter and take the first element
 		if strings.Contains(line, delimiter) {
-			line = strings.Split(line, delimiter)[0]
+			line = strings.TrimSpace(strings.Split(line, delimiter)[0])
 		}
 		// split the line by dot and take the first element if ignoreFQDN is set
 		if ignoreFQDN {
-			line = strings.Split(line, ".")[0]
+			line = strings.TrimSpace(strings.Split(line, ".")[0])
 		}
 		fs.set.Add(line)
 	}
