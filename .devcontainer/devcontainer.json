@@ -1,7 +1,12 @@
 {
     "name": "Go",
     "image": "mcr.microsoft.com/devcontainers/go:2-1.25",
-    "runArgs": [ "--userns=keep-id" ],
+    "runArgs": [
+        "--userns=keep-id"
+    ],
+    "securityOpt": [
+        "no-new-privileges=false"
+    ],
     "customizations": {
         "vscode": {
             "settings": {
@@ -18,7 +23,6 @@
                 "bierner.markdown-mermaid",
                 "bierner.markdown-preview-github-styles",
                 "DavidAnson.vscode-markdownlint",
-                "eamodio.gitlens",
                 "EditorConfig.EditorConfig",
                 "golang.go",
                 "streetsidesoftware.code-spell-checker",
@@ -26,6 +30,8 @@
             ]
         }
     },
-"containerEnv": { "HOME": "/home/vscode" },
-"remoteUser": "vscode"
+    "containerEnv": {
+        "HOME": "/home/vscode"
+    },
+    "remoteUser": "vscode"
 }
