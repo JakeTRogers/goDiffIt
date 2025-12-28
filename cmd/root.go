@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/JakeTRogers/goDiffIt/logger"
@@ -154,82 +154,15 @@ func fileToSet(path string, cfg *config) (*hashset.Set[string], error) {
 	return set, nil
 }
 
-// difference calculates the set difference between fileSetA and fileSetB.
-// It populates diffAB with elements in A but not in B.
-// If cfg.pipe is false, it also populates diffBA with elements in B but not in A.
-func (r *results) difference(cfg *config) {
-	r.operation = "difference"
-	for _, element := range r.fileSetA.set.Values() {
-		if !r.fileSetB.set.Contains(element) {
-			r.diffAB.Add(element)
-		}
-	}
-	if cfg.pipe {
-		return
-	}
-	for _, element := range r.fileSetB.set.Values() {
-		if !r.fileSetA.set.Contains(element) {
-			r.diffBA.Add(element)
-		}
-	}
-}
-
-// union calculates the union of fileSetA and fileSetB.
-// It populates diffAB with all elements from both sets.
-func (r *results) union() {
-	r.operation = "union"
-	for _, element := range r.fileSetA.set.Values() {
-		r.diffAB.Add(element)
-	}
-	for _, element := range r.fileSetB.set.Values() {
-		r.diffAB.Add(element)
-	}
-}
-
-// intersection calculates the intersection of fileSetA and fileSetB.
-// It populates diffAB with elements present in both sets.
-func (r *results) intersection() {
-	r.operation = "intersection"
-	for _, element := range r.fileSetA.set.Values() {
-		if r.fileSetB.set.Contains(element) {
-			r.diffAB.Add(element)
-		}
-	}
-}
-
-// symmetricDifference calculates the symmetric difference (XOR) of fileSetA and fileSetB.
-// It populates diffAB with elements present in exactly one of the two sets.
-func (r *results) symmetricDifference() {
-	r.operation = "symmetric-difference"
-	for _, element := range r.fileSetA.set.Values() {
-		if !r.fileSetB.set.Contains(element) {
-			r.diffAB.Add(element)
-		}
-	}
-	for _, element := range r.fileSetB.set.Values() {
-		if !r.fileSetA.set.Contains(element) {
-			r.diffAB.Add(element)
-		}
-	}
-}
-
 // hasDifferences returns true if the result sets contain any elements.
 // For difference operations, checks both A-B and B-A sets.
 func (r *results) hasDifferences() bool {
-	if r.diffAB.Size() > 0 {
-		return true
-	}
-	if r.operation == "difference" && r.diffBA.Size() > 0 {
-		return true
-	}
-	return false
+	return r.diffAB.Size() > 0 || (r.operation == "difference" && r.diffBA.Size() > 0)
 }
 
 // toSortedSlice converts a hashset to a sorted string slice.
 func toSortedSlice(hs *hashset.Set[string]) []string {
-	values := hs.Values()
-	sort.Strings(values)
-	return values
+	return slices.Sorted(slices.Values(hs.Values()))
 }
 
 // jsonOutput represents the JSON structure for output.
@@ -363,20 +296,13 @@ func (r *results) printSet(cfg *config) error {
 	if cfg.stats {
 		sizeA := r.fileSetA.set.Size()
 		sizeB := r.fileSetB.set.Size()
+		overlap := r.fileSetA.set.Intersection(r.fileSetB.set).Size()
 
 		if _, err := fmt.Fprintf(output, "File A: %d unique lines\n", sizeA); err != nil {
 			return fmt.Errorf("failed to write stats: %w", err)
 		}
 		if _, err := fmt.Fprintf(output, "File B: %d unique lines\n", sizeB); err != nil {
 			return fmt.Errorf("failed to write stats: %w", err)
-		}
-
-		// Calculate overlap (intersection)
-		overlap := 0
-		for _, element := range r.fileSetA.set.Values() {
-			if r.fileSetB.set.Contains(element) {
-				overlap++
-			}
 		}
 
 		if sizeA > 0 && sizeB > 0 {
@@ -518,19 +444,26 @@ comma by default, but any character can be specified via the --delimiter flag.`,
 
 		log.Debug().Str("fileA", rs.fileSetA.path).Str("fileB", rs.fileSetB.path).Msg("processing")
 
-		intersection, _ := cmd.Flags().GetBool("intersection")
-		union, _ := cmd.Flags().GetBool("union")
-		symmetricDiff, _ := cmd.Flags().GetBool("symmetric-difference")
+		intersectionFlag, _ := cmd.Flags().GetBool("intersection")
+		unionFlag, _ := cmd.Flags().GetBool("union")
+		symmetricDiffFlag, _ := cmd.Flags().GetBool("symmetric-difference")
 
 		switch {
-		case intersection:
-			rs.intersection()
-		case union:
-			rs.union()
-		case symmetricDiff:
-			rs.symmetricDifference()
+		case intersectionFlag:
+			rs.operation = "intersection"
+			rs.diffAB = rs.fileSetA.set.Intersection(rs.fileSetB.set)
+		case unionFlag:
+			rs.operation = "union"
+			rs.diffAB = rs.fileSetA.set.Union(rs.fileSetB.set)
+		case symmetricDiffFlag:
+			rs.operation = "symmetric-difference"
+			rs.diffAB = rs.fileSetA.set.Difference(rs.fileSetB.set).Union(rs.fileSetB.set.Difference(rs.fileSetA.set))
 		default:
-			rs.difference(cfg)
+			rs.operation = "difference"
+			rs.diffAB = rs.fileSetA.set.Difference(rs.fileSetB.set)
+			if !cfg.pipe {
+				rs.diffBA = rs.fileSetB.set.Difference(rs.fileSetA.set)
+			}
 		}
 
 		log.Debug().Str("operation", rs.operation).Msg("completed")

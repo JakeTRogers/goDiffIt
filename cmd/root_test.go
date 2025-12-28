@@ -5,9 +5,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"reflect"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -143,10 +142,31 @@ func makeResults(setA, setB []string) results {
 	}
 }
 
+// makeResultsWithOp creates a results struct with the specified operation applied.
+// This mirrors the inline set operations in RunE.
+func makeResultsWithOp(setA, setB []string, op string, pipeMode bool) results {
+	r := makeResults(setA, setB)
+	r.operation = op
+	switch op {
+	case "intersection":
+		r.diffAB = r.fileSetA.set.Intersection(r.fileSetB.set)
+	case "union":
+		r.diffAB = r.fileSetA.set.Union(r.fileSetB.set)
+	case "symmetric-difference":
+		r.diffAB = r.fileSetA.set.Difference(r.fileSetB.set).Union(r.fileSetB.set.Difference(r.fileSetA.set))
+	case "difference":
+		r.diffAB = r.fileSetA.set.Difference(r.fileSetB.set)
+		if !pipeMode {
+			r.diffBA = r.fileSetB.set.Difference(r.fileSetA.set)
+		}
+	}
+	return r
+}
+
 // assertStringSlice compares two string slices and fails if they differ.
 func assertStringSlice(t *testing.T, got, want []string) {
 	t.Helper()
-	if !reflect.DeepEqual(got, want) {
+	if !slices.Equal(got, want) {
 		t.Errorf("got %v, want %v", got, want)
 	}
 }
@@ -397,7 +417,7 @@ func TestFileToSetDelimiters(t *testing.T) {
 			}
 
 			got := toSortedSlice(set)
-			if !reflect.DeepEqual(got, tt.expected) {
+			if !slices.Equal(got, tt.expected) {
 				t.Errorf("got %v, want %v", got, tt.expected)
 			}
 		})
@@ -458,7 +478,7 @@ func TestFileToSetExtract(t *testing.T) {
 			}
 
 			got := toSortedSlice(set)
-			if !reflect.DeepEqual(got, tt.expected) {
+			if !slices.Equal(got, tt.expected) {
 				t.Errorf("got %v, want %v", got, tt.expected)
 			}
 		})
@@ -526,7 +546,7 @@ func TestFileToSetTrimPatterns(t *testing.T) {
 			}
 
 			got := toSortedSlice(set)
-			if !reflect.DeepEqual(got, tt.expected) {
+			if !slices.Equal(got, tt.expected) {
 				t.Errorf("got %v, want %v", got, tt.expected)
 			}
 		})
@@ -534,107 +554,30 @@ func TestFileToSetTrimPatterns(t *testing.T) {
 }
 
 // --- Set operation tests ---
-
-func TestResultsDifference(t *testing.T) {
-	t.Parallel()
-
-	t.Run("normal-mode", func(t *testing.T) {
-		t.Parallel()
-		cfg := testConfig(false, ",", false, false)
-		r := makeResults([]string{"a", "b", "c"}, []string{"b", "c", "d"})
-		r.difference(cfg)
-
-		assertStringSlice(t, toSortedSlice(r.diffAB), []string{"a"})
-		assertStringSlice(t, toSortedSlice(r.diffBA), []string{"d"})
-	})
-
-	t.Run("pipe-mode", func(t *testing.T) {
-		t.Parallel()
-		cfg := testConfig(false, ",", false, true)
-		r := makeResults([]string{"a", "b", "c"}, []string{"b", "c", "d"})
-		r.difference(cfg)
-
-		assertStringSlice(t, toSortedSlice(r.diffAB), []string{"a"})
-		if r.diffBA.Size() != 0 {
-			t.Errorf("expected diffBA to be empty in pipe mode, got size %d", r.diffBA.Size())
-		}
-	})
-}
-
-func TestResultsUnion(t *testing.T) {
-	t.Parallel()
-	r := makeResults([]string{"a", "b"}, []string{"b", "c"})
-	r.union()
-
-	assertStringSlice(t, toSortedSlice(r.diffAB), []string{"a", "b", "c"})
-	if r.diffBA.Size() != 0 {
-		t.Errorf("expected secondary set to remain empty, got size %d", r.diffBA.Size())
-	}
-}
-
-func TestResultsIntersection(t *testing.T) {
-	t.Parallel()
-	r := makeResults([]string{"a", "b", "c"}, []string{"b", "c", "d"})
-	r.intersection()
-
-	assertStringSlice(t, toSortedSlice(r.diffAB), []string{"b", "c"})
-	if r.diffBA.Size() != 0 {
-		t.Errorf("expected secondary set to remain empty, got size %d", r.diffBA.Size())
-	}
-}
-
-func TestResultsSymmetricDifference(t *testing.T) {
-	t.Parallel()
-
-	t.Run("basic", func(t *testing.T) {
-		t.Parallel()
-		r := makeResults([]string{"a", "b", "c"}, []string{"b", "c", "d"})
-		r.symmetricDifference()
-
-		assertStringSlice(t, toSortedSlice(r.diffAB), []string{"a", "d"})
-		if r.diffBA.Size() != 0 {
-			t.Errorf("expected secondary set to remain empty, got size %d", r.diffBA.Size())
-		}
-	})
-
-	t.Run("identical-sets", func(t *testing.T) {
-		t.Parallel()
-		r := makeResults([]string{"a", "b", "c"}, []string{"a", "b", "c"})
-		r.symmetricDifference()
-
-		if r.diffAB.Size() != 0 {
-			t.Errorf("expected empty result for identical sets, got size %d", r.diffAB.Size())
-		}
-	})
-
-	t.Run("disjoint-sets", func(t *testing.T) {
-		t.Parallel()
-		r := makeResults([]string{"a", "b"}, []string{"c", "d"})
-		r.symmetricDifference()
-
-		assertStringSlice(t, toSortedSlice(r.diffAB), []string{"a", "b", "c", "d"})
-	})
-}
+// Note: Set operations are now inlined in RunE and tested via CLI integration tests.
+// These tests verify the hasDifferences helper and edge cases.
 
 func TestResultsHasDifferences(t *testing.T) {
 	t.Parallel()
 
-	t.Run("difference-with-results", func(t *testing.T) {
+	t.Run("diffAB-has-elements", func(t *testing.T) {
 		t.Parallel()
-		cfg := testConfig(false, ",", false, false)
 		r := makeResults([]string{"a", "b"}, []string{"b", "c"})
-		r.difference(cfg)
+		r.operation = "difference"
+		r.diffAB = r.fileSetA.set.Difference(r.fileSetB.set)
+		r.diffBA = r.fileSetB.set.Difference(r.fileSetA.set)
 
 		if !r.hasDifferences() {
 			t.Error("expected hasDifferences to return true when diffAB has elements")
 		}
 	})
 
-	t.Run("difference-no-results", func(t *testing.T) {
+	t.Run("identical-sets-no-differences", func(t *testing.T) {
 		t.Parallel()
-		cfg := testConfig(false, ",", false, false)
 		r := makeResults([]string{"a", "b"}, []string{"a", "b"})
-		r.difference(cfg)
+		r.operation = "difference"
+		r.diffAB = r.fileSetA.set.Difference(r.fileSetB.set)
+		r.diffBA = r.fileSetB.set.Difference(r.fileSetA.set)
 
 		if r.hasDifferences() {
 			t.Error("expected hasDifferences to return false for identical sets")
@@ -644,17 +587,19 @@ func TestResultsHasDifferences(t *testing.T) {
 	t.Run("intersection-with-results", func(t *testing.T) {
 		t.Parallel()
 		r := makeResults([]string{"a", "b"}, []string{"b", "c"})
-		r.intersection()
+		r.operation = "intersection"
+		r.diffAB = r.fileSetA.set.Intersection(r.fileSetB.set)
 
 		if !r.hasDifferences() {
 			t.Error("expected hasDifferences to return true when diffAB has elements")
 		}
 	})
 
-	t.Run("intersection-no-results", func(t *testing.T) {
+	t.Run("intersection-empty", func(t *testing.T) {
 		t.Parallel()
 		r := makeResults([]string{"a", "b"}, []string{"c", "d"})
-		r.intersection()
+		r.operation = "intersection"
+		r.diffAB = r.fileSetA.set.Intersection(r.fileSetB.set)
 
 		if r.hasDifferences() {
 			t.Error("expected hasDifferences to return false for empty intersection")
@@ -663,9 +608,10 @@ func TestResultsHasDifferences(t *testing.T) {
 
 	t.Run("difference-only-in-B", func(t *testing.T) {
 		t.Parallel()
-		cfg := testConfig(false, ",", false, false)
 		r := makeResults([]string{"a"}, []string{"a", "b"})
-		r.difference(cfg)
+		r.operation = "difference"
+		r.diffAB = r.fileSetA.set.Difference(r.fileSetB.set)
+		r.diffBA = r.fileSetB.set.Difference(r.fileSetA.set)
 
 		// diffAB is empty but diffBA has "b"
 		if !r.hasDifferences() {
@@ -1158,8 +1104,7 @@ func TestPrintSetJSONFormat(t *testing.T) {
 		cfg := testConfig(false, ",", false, false)
 		cfg.format = "json"
 
-		r := makeResults([]string{"a", "b", "c"}, []string{"b", "c", "d"})
-		r.intersection()
+		r := makeResultsWithOp([]string{"a", "b", "c"}, []string{"b", "c", "d"}, "intersection", false)
 
 		output := captureOutput(t, func() {
 			if err := r.printSet(cfg); err != nil {
@@ -1179,8 +1124,7 @@ func TestPrintSetJSONFormat(t *testing.T) {
 		cfg := testConfig(false, ",", false, false)
 		cfg.format = "json"
 
-		r := makeResults([]string{"a", "b", "c"}, []string{"b", "c", "d"})
-		r.difference(cfg)
+		r := makeResultsWithOp([]string{"a", "b", "c"}, []string{"b", "c", "d"}, "difference", false)
 
 		output := captureOutput(t, func() {
 			if err := r.printSet(cfg); err != nil {
@@ -1200,8 +1144,7 @@ func TestPrintSetJSONFormat(t *testing.T) {
 		cfg := testConfig(false, ",", false, false)
 		cfg.format = "json"
 
-		r := makeResults([]string{"a", "b"}, []string{"b", "c"})
-		r.union()
+		r := makeResultsWithOp([]string{"a", "b"}, []string{"b", "c"}, "union", false)
 
 		output := captureOutput(t, func() {
 			if err := r.printSet(cfg); err != nil {
@@ -1221,8 +1164,7 @@ func TestPrintSetJSONFormat(t *testing.T) {
 		cfg := testConfig(false, ",", false, false)
 		cfg.format = "json"
 
-		r := makeResults([]string{"a", "b"}, []string{"b", "c"})
-		r.symmetricDifference()
+		r := makeResultsWithOp([]string{"a", "b"}, []string{"b", "c"}, "symmetric-difference", false)
 
 		output := captureOutput(t, func() {
 			if err := r.printSet(cfg); err != nil {
@@ -1241,8 +1183,7 @@ func TestPrintSetCSVFormat(t *testing.T) {
 		cfg := testConfig(false, ",", false, false)
 		cfg.format = "csv"
 
-		r := makeResults([]string{"a", "b"}, []string{"b", "c"})
-		r.union()
+		r := makeResultsWithOp([]string{"a", "b"}, []string{"b", "c"}, "union", false)
 
 		output := captureOutput(t, func() {
 			if err := r.printSet(cfg); err != nil {
@@ -1264,8 +1205,7 @@ func TestPrintSetCSVFormat(t *testing.T) {
 		cfg := testConfig(false, ",", false, false)
 		cfg.format = "csv"
 
-		r := makeResults([]string{"a", "b", "c"}, []string{"b", "c", "d"})
-		r.difference(cfg)
+		r := makeResultsWithOp([]string{"a", "b", "c"}, []string{"b", "c", "d"}, "difference", false)
 
 		output := captureOutput(t, func() {
 			if err := r.printSet(cfg); err != nil {
@@ -1288,8 +1228,7 @@ func TestPrintSetCSVFormat(t *testing.T) {
 		cfg := testConfig(false, ",", false, false)
 		cfg.format = "csv"
 
-		r := makeResults([]string{"a", "b", "c"}, []string{"b", "c", "d"})
-		r.intersection()
+		r := makeResultsWithOp([]string{"a", "b", "c"}, []string{"b", "c", "d"}, "intersection", false)
 
 		output := captureOutput(t, func() {
 			if err := r.printSet(cfg); err != nil {
@@ -1309,8 +1248,7 @@ func TestPrintSetCSVFormat(t *testing.T) {
 		cfg := testConfig(false, ",", false, false)
 		cfg.format = "csv"
 
-		r := makeResults([]string{"a", "b"}, []string{"b", "c"})
-		r.symmetricDifference()
+		r := makeResultsWithOp([]string{"a", "b"}, []string{"b", "c"}, "symmetric-difference", false)
 
 		output := captureOutput(t, func() {
 			if err := r.printSet(cfg); err != nil {
@@ -1446,10 +1384,10 @@ func TestCLIIntegration(t *testing.T) {
 
 			if len(tt.exact) > 0 {
 				lines := strings.Split(strings.TrimSpace(output), "\n")
-				sort.Strings(lines)
+				slices.Sort(lines)
 				want := make([]string, len(tt.exact))
 				copy(want, tt.exact)
-				sort.Strings(want)
+				slices.Sort(want)
 				assertStringSlice(t, lines, want)
 			}
 		})
@@ -1484,7 +1422,7 @@ func TestCLIOutputFile(t *testing.T) {
 	}
 
 	lines := strings.Split(strings.TrimSpace(string(content)), "\n")
-	sort.Strings(lines)
+	slices.Sort(lines)
 	want := []string{"alpha", "beta", "delta", "gamma"}
 	assertStringSlice(t, lines, want)
 }
