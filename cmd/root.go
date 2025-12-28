@@ -24,6 +24,7 @@ var (
 	ignoreFQDN    bool
 	pipe          bool
 	output        string
+	count         bool
 )
 
 // log is the package-level logger instance.
@@ -37,6 +38,7 @@ type config struct {
 	ignoreFQDN    bool
 	pipe          bool
 	output        string
+	count         bool
 }
 
 // fileSet associates a file path with its parsed set of normalized lines.
@@ -165,6 +167,7 @@ func toSortedSlice(hs *hashset.Set[string]) []string {
 }
 
 // printSet outputs the result sets to stdout or a file.
+// When cfg.count is true, it prints only the counts instead of the elements.
 // When cfg.pipe is true, it suppresses headers for easier command-line piping.
 // For difference operations without pipe mode, it prints both A-B and B-A results.
 // If cfg.output is set, results are written to the specified file.
@@ -184,6 +187,23 @@ func (r *results) printSet(cfg *config) error {
 		}()
 	} else {
 		output = os.Stdout
+	}
+
+	// Count mode: only output counts
+	if cfg.count {
+		if r.operation == "difference" {
+			if _, err := fmt.Fprintf(output, "A-B: %d\n", r.diffAB.Size()); err != nil {
+				return fmt.Errorf("failed to write count: %w", err)
+			}
+			if _, err := fmt.Fprintf(output, "B-A: %d\n", r.diffBA.Size()); err != nil {
+				return fmt.Errorf("failed to write count: %w", err)
+			}
+		} else {
+			if _, err := fmt.Fprintf(output, "%d\n", r.diffAB.Size()); err != nil {
+				return fmt.Errorf("failed to write count: %w", err)
+			}
+		}
+		return nil
 	}
 
 	if !cfg.pipe {
@@ -253,7 +273,10 @@ comma by default, but any character can be specified via the --delimiter flag.`,
 			caseSensitive: caseSensitive,
 			delimiter:     delimiter,
 			ignoreFQDN:    ignoreFQDN,
-			pipe:          pipe, output: output}
+			pipe:          pipe,
+			output:        output,
+			count:         count,
+		}
 
 		// Log flag values at debug level
 		log.Debug().
@@ -311,6 +334,7 @@ func Execute() {
 
 func init() {
 	rootCmd.Flags().BoolVarP(&caseSensitive, "case-sensitive", "c", false, "preserve case during comparison (default: case-insensitive)")
+	rootCmd.Flags().BoolVar(&count, "count", false, "output only the count of results instead of the elements")
 	rootCmd.Flags().StringVarP(&delimiter, "delimiter", "d", ",", "delimiter for splitting lines (default: comma)")
 	rootCmd.Flags().BoolVarP(&ignoreFQDN, "ignore-fqdn", "f", false, "strip FQDN suffixes (keep only hostname before first dot)")
 	rootCmd.Flags().StringVarP(&output, "output", "o", "", "write output to file instead of stdout")

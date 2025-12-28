@@ -33,7 +33,10 @@ func testConfig(caseSens bool, delim string, ignoreFQDN, pipeMode bool) *config 
 		caseSensitive: caseSens,
 		delimiter:     delim,
 		ignoreFQDN:    ignoreFQDN,
-		pipe:          pipeMode, output: ""}
+		pipe:          pipeMode,
+		output:        "",
+		count:         false,
+	}
 }
 
 // captureOutput captures stdout during fn execution and returns the output.
@@ -75,6 +78,7 @@ func captureOutput(t *testing.T, fn func()) string {
 func resetRootCmd() {
 	rootCmd.ResetFlags()
 	rootCmd.Flags().BoolVarP(&caseSensitive, "case-sensitive", "c", false, "preserve case during comparison")
+	rootCmd.Flags().BoolVar(&count, "count", false, "output only the count of results instead of the elements")
 	rootCmd.Flags().StringVarP(&delimiter, "delimiter", "d", ",", "delimiter for splitting lines")
 	rootCmd.Flags().BoolVarP(&ignoreFQDN, "ignore-fqdn", "f", false, "strip FQDN suffixes")
 	rootCmd.Flags().StringVarP(&output, "output", "o", "", "write output to file instead of stdout")
@@ -600,6 +604,130 @@ func TestPrintSetOutputFile(t *testing.T) {
 	})
 }
 
+func TestPrintSetCountMode(t *testing.T) {
+	// Cannot run in parallel: captureOutput modifies global os.Stdout
+
+	t.Run("difference", func(t *testing.T) {
+		cfg := testConfig(false, ",", false, false)
+		cfg.count = true
+
+		r := results{
+			fileSetA:  fileSet{path: "A", set: hashset.New[string]()},
+			fileSetB:  fileSet{path: "B", set: hashset.New[string]()},
+			diffAB:    makeSet("alpha", "beta", "gamma"),
+			diffBA:    makeSet("delta", "epsilon"),
+			operation: "difference",
+		}
+
+		output := captureOutput(t, func() {
+			if err := r.printSet(cfg); err != nil {
+				t.Fatalf("printSet returned error: %v", err)
+			}
+		})
+
+		want := "A-B: 3\nB-A: 2\n"
+		if output != want {
+			t.Errorf("got:\n%q\nwant:\n%q", output, want)
+		}
+	})
+
+	t.Run("union", func(t *testing.T) {
+		cfg := testConfig(false, ",", false, false)
+		cfg.count = true
+
+		r := results{
+			fileSetA:  fileSet{path: "A", set: hashset.New[string]()},
+			fileSetB:  fileSet{path: "B", set: hashset.New[string]()},
+			diffAB:    makeSet("a", "b", "c", "d", "e"),
+			diffBA:    hashset.New[string](),
+			operation: "union",
+		}
+
+		output := captureOutput(t, func() {
+			if err := r.printSet(cfg); err != nil {
+				t.Fatalf("printSet returned error: %v", err)
+			}
+		})
+
+		want := "5\n"
+		if output != want {
+			t.Errorf("got:\n%q\nwant:\n%q", output, want)
+		}
+	})
+
+	t.Run("intersection", func(t *testing.T) {
+		cfg := testConfig(false, ",", false, false)
+		cfg.count = true
+
+		r := results{
+			fileSetA:  fileSet{path: "A", set: hashset.New[string]()},
+			fileSetB:  fileSet{path: "B", set: hashset.New[string]()},
+			diffAB:    makeSet("shared1", "shared2"),
+			diffBA:    hashset.New[string](),
+			operation: "intersection",
+		}
+
+		output := captureOutput(t, func() {
+			if err := r.printSet(cfg); err != nil {
+				t.Fatalf("printSet returned error: %v", err)
+			}
+		})
+
+		want := "2\n"
+		if output != want {
+			t.Errorf("got:\n%q\nwant:\n%q", output, want)
+		}
+	})
+
+	t.Run("symmetric-difference", func(t *testing.T) {
+		cfg := testConfig(false, ",", false, false)
+		cfg.count = true
+
+		r := results{
+			fileSetA:  fileSet{path: "A", set: hashset.New[string]()},
+			fileSetB:  fileSet{path: "B", set: hashset.New[string]()},
+			diffAB:    makeSet("unique1", "unique2", "unique3"),
+			diffBA:    hashset.New[string](),
+			operation: "symmetric-difference",
+		}
+
+		output := captureOutput(t, func() {
+			if err := r.printSet(cfg); err != nil {
+				t.Fatalf("printSet returned error: %v", err)
+			}
+		})
+
+		want := "3\n"
+		if output != want {
+			t.Errorf("got:\n%q\nwant:\n%q", output, want)
+		}
+	})
+
+	t.Run("empty-result", func(t *testing.T) {
+		cfg := testConfig(false, ",", false, false)
+		cfg.count = true
+
+		r := results{
+			fileSetA:  fileSet{path: "A", set: hashset.New[string]()},
+			fileSetB:  fileSet{path: "B", set: hashset.New[string]()},
+			diffAB:    hashset.New[string](),
+			diffBA:    hashset.New[string](),
+			operation: "intersection",
+		}
+
+		output := captureOutput(t, func() {
+			if err := r.printSet(cfg); err != nil {
+				t.Fatalf("printSet returned error: %v", err)
+			}
+		})
+
+		want := "0\n"
+		if output != want {
+			t.Errorf("got:\n%q\nwant:\n%q", output, want)
+		}
+	})
+}
+
 // --- toSortedSlice tests ---
 
 func TestToSortedSlice(t *testing.T) {
@@ -762,4 +890,69 @@ func TestCLIOutputFile(t *testing.T) {
 	sort.Strings(lines)
 	want := []string{"alpha", "beta", "delta", "gamma"}
 	assertStringSlice(t, lines, want)
+}
+
+func TestCLICountMode(t *testing.T) {
+	t.Run("difference", func(t *testing.T) {
+		cliMu.Lock()
+		defer cliMu.Unlock()
+
+		withCLICleanup(t)
+
+		fileA := writeTempFile(t, []string{"alpha", "beta", "gamma"})
+		fileB := writeTempFile(t, []string{"beta", "gamma", "delta"})
+
+		os.Args = []string{"goDiffIt", "--count", fileA, fileB}
+
+		output := captureOutput(t, func() {
+			Execute()
+		})
+
+		if !strings.Contains(output, "A-B: 1") {
+			t.Errorf("expected 'A-B: 1', got: %q", output)
+		}
+		if !strings.Contains(output, "B-A: 1") {
+			t.Errorf("expected 'B-A: 1', got: %q", output)
+		}
+	})
+
+	t.Run("union", func(t *testing.T) {
+		cliMu.Lock()
+		defer cliMu.Unlock()
+
+		withCLICleanup(t)
+
+		fileA := writeTempFile(t, []string{"alpha", "beta", "gamma"})
+		fileB := writeTempFile(t, []string{"beta", "gamma", "delta"})
+
+		os.Args = []string{"goDiffIt", "--union", "--count", fileA, fileB}
+
+		output := captureOutput(t, func() {
+			Execute()
+		})
+
+		if strings.TrimSpace(output) != "4" {
+			t.Errorf("expected '4', got: %q", output)
+		}
+	})
+
+	t.Run("intersection", func(t *testing.T) {
+		cliMu.Lock()
+		defer cliMu.Unlock()
+
+		withCLICleanup(t)
+
+		fileA := writeTempFile(t, []string{"alpha", "beta", "gamma"})
+		fileB := writeTempFile(t, []string{"beta", "gamma", "delta"})
+
+		os.Args = []string{"goDiffIt", "--intersection", "--count", fileA, fileB}
+
+		output := captureOutput(t, func() {
+			Execute()
+		})
+
+		if strings.TrimSpace(output) != "2" {
+			t.Errorf("expected '2', got: %q", output)
+		}
+	})
 }
