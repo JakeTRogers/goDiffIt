@@ -81,7 +81,8 @@ func resetRootCmd() {
 	rootCmd.Flags().BoolVarP(&pipe, "pipe", "p", false, "suppress headers for piped output")
 	rootCmd.Flags().BoolP("intersection", "i", false, "show the intersection of the two files")
 	rootCmd.Flags().BoolP("union", "u", false, "show the union of the two files")
-	rootCmd.MarkFlagsMutuallyExclusive("intersection", "union")
+	rootCmd.Flags().BoolP("symmetric-difference", "s", false, "show the symmetric difference (XOR) of the two files")
+	rootCmd.MarkFlagsMutuallyExclusive("intersection", "union", "symmetric-difference")
 	rootCmd.PersistentFlags().CountP("verbose", "v", "increase verbosity")
 }
 
@@ -361,6 +362,39 @@ func TestResultsIntersection(t *testing.T) {
 	}
 }
 
+func TestResultsSymmetricDifference(t *testing.T) {
+	t.Parallel()
+
+	t.Run("basic", func(t *testing.T) {
+		t.Parallel()
+		r := makeResults([]string{"a", "b", "c"}, []string{"b", "c", "d"})
+		r.symmetricDifference()
+
+		assertStringSlice(t, toSortedSlice(r.diffAB), []string{"a", "d"})
+		if r.diffBA.Size() != 0 {
+			t.Errorf("expected secondary set to remain empty, got size %d", r.diffBA.Size())
+		}
+	})
+
+	t.Run("identical-sets", func(t *testing.T) {
+		t.Parallel()
+		r := makeResults([]string{"a", "b", "c"}, []string{"a", "b", "c"})
+		r.symmetricDifference()
+
+		if r.diffAB.Size() != 0 {
+			t.Errorf("expected empty result for identical sets, got size %d", r.diffAB.Size())
+		}
+	})
+
+	t.Run("disjoint-sets", func(t *testing.T) {
+		t.Parallel()
+		r := makeResults([]string{"a", "b"}, []string{"c", "d"})
+		r.symmetricDifference()
+
+		assertStringSlice(t, toSortedSlice(r.diffAB), []string{"a", "b", "c", "d"})
+	})
+}
+
 // --- printSet tests ---
 
 func TestPrintSetOperations(t *testing.T) {
@@ -417,6 +451,20 @@ func TestPrintSetOperations(t *testing.T) {
 			pipe:      true,
 			diffAB:    []string{"shared"},
 			want:      "shared\n",
+		},
+		{
+			name:      "symmetric-difference-full",
+			operation: "symmetric-difference",
+			pipe:      false,
+			diffAB:    []string{"alpha", "delta"},
+			want:      "Symmetric difference of A and B:\nalpha\ndelta\n",
+		},
+		{
+			name:      "symmetric-difference-pipe",
+			operation: "symmetric-difference",
+			pipe:      true,
+			diffAB:    []string{"alpha", "delta"},
+			want:      "alpha\ndelta\n",
 		},
 	}
 
@@ -547,6 +595,13 @@ func TestCLIIntegration(t *testing.T) {
 			fileA: []string{"host1|web", "host2|db"},
 			fileB: []string{"host2", "host3"},
 			exact: []string{"host1"},
+		},
+		{
+			name:  "symmetric-difference-pipe",
+			args:  []string{"--symmetric-difference", "--pipe"},
+			fileA: []string{"alpha", "beta", "gamma"},
+			fileB: []string{"beta", "gamma", "delta"},
+			exact: []string{"alpha", "delta"},
 		},
 	}
 

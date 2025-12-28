@@ -139,6 +139,22 @@ func (r *results) intersection() {
 	}
 }
 
+// symmetricDifference calculates the symmetric difference (XOR) of fileSetA and fileSetB.
+// It populates diffAB with elements present in exactly one of the two sets.
+func (r *results) symmetricDifference() {
+	r.operation = "symmetric-difference"
+	for _, element := range r.fileSetA.set.Values() {
+		if !r.fileSetB.set.Contains(element) {
+			r.diffAB.Add(element)
+		}
+	}
+	for _, element := range r.fileSetB.set.Values() {
+		if !r.fileSetA.set.Contains(element) {
+			r.diffAB.Add(element)
+		}
+	}
+}
+
 // toSortedSlice converts a hashset to a sorted string slice.
 func toSortedSlice(hs *hashset.Set[string]) []string {
 	values := hs.Values()
@@ -158,6 +174,8 @@ func (r *results) printSet(cfg *config) error {
 			fmt.Printf("Union of %s and %s:\n", r.fileSetA.path, r.fileSetB.path)
 		case "difference":
 			fmt.Printf("Difference of %s - %s:\n", r.fileSetA.path, r.fileSetB.path)
+		case "symmetric-difference":
+			fmt.Printf("Symmetric difference of %s and %s:\n", r.fileSetA.path, r.fileSetB.path)
 		default:
 			return fmt.Errorf("invalid operation: %s", r.operation)
 		}
@@ -235,12 +253,15 @@ comma by default, but any character can be specified via the --delimiter flag.`,
 
 		intersection, _ := cmd.Flags().GetBool("intersection")
 		union, _ := cmd.Flags().GetBool("union")
+		symmetricDiff, _ := cmd.Flags().GetBool("symmetric-difference")
 
 		switch {
 		case intersection:
 			rs.intersection()
 		case union:
 			rs.union()
+		case symmetricDiff:
+			rs.symmetricDifference()
 		default:
 			rs.difference(cfg)
 		}
@@ -265,6 +286,7 @@ func init() {
 	rootCmd.Flags().BoolVarP(&pipe, "pipe", "p", false, "suppress headers for piped output")
 	rootCmd.Flags().BoolP("intersection", "i", false, "show the intersection of the two files")
 	rootCmd.Flags().BoolP("union", "u", false, "show the union of the two files")
-	rootCmd.MarkFlagsMutuallyExclusive("intersection", "union")
+	rootCmd.Flags().BoolP("symmetric-difference", "s", false, "show the symmetric difference (XOR) of the two files")
+	rootCmd.MarkFlagsMutuallyExclusive("intersection", "union", "symmetric-difference")
 	rootCmd.PersistentFlags().CountP("verbose", "v", "increase verbosity (-v=warn, -vv=info, -vvv=debug, -vvvv=trace)")
 }
