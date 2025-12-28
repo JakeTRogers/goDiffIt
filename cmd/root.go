@@ -63,25 +63,32 @@ type results struct {
 // fileToSet reads the file at the given path and returns a set of normalized lines.
 // Lines are trimmed, optionally lowercased, split by delimiter, and optionally
 // have FQDN suffixes stripped based on the provided config.
+// If path is "-", it reads from stdin instead.
 func fileToSet(path string, cfg *config) (*hashset.Set[string], error) {
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return nil, fmt.Errorf("file does not exist: %w", err)
-	}
+	var reader *bufio.Scanner
 
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open file: %w", err)
-	}
-	defer func() {
-		if cerr := file.Close(); cerr != nil {
-			log.Err(cerr).Msg("failed to close file")
+	if path == "-" {
+		reader = bufio.NewScanner(os.Stdin)
+	} else {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			return nil, fmt.Errorf("file does not exist: %w", err)
 		}
-	}()
+
+		file, err := os.Open(path)
+		if err != nil {
+			return nil, fmt.Errorf("failed to open file: %w", err)
+		}
+		defer func() {
+			if cerr := file.Close(); cerr != nil {
+				log.Err(cerr).Msg("failed to close file")
+			}
+		}()
+		reader = bufio.NewScanner(file)
+	}
 
 	set := hashset.New[string]()
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+	for reader.Scan() {
+		line := strings.TrimSpace(reader.Text())
 		if line == "" {
 			continue
 		}
@@ -96,8 +103,8 @@ func fileToSet(path string, cfg *config) (*hashset.Set[string], error) {
 		}
 		set.Add(line)
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("failed to scan file: %w", err)
+	if err := reader.Err(); err != nil {
+		return nil, fmt.Errorf("failed to scan input: %w", err)
 	}
 	return set, nil
 }

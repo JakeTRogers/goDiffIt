@@ -35,7 +35,9 @@ func testConfig(caseSens bool, delim string, ignoreFQDN, pipeMode bool) *config 
 		ignoreFQDN:    ignoreFQDN,
 		pipe:          pipeMode,
 		output:        "",
-		count:         false, stats: false}
+		count:         false,
+		stats:         false,
+	}
 }
 
 // captureOutput captures stdout during fn execution and returns the output.
@@ -226,6 +228,47 @@ func TestFileToSet(t *testing.T) {
 			t.Errorf("expected empty set for whitespace-only file, got size %d", set.Size())
 		}
 	})
+}
+
+func TestFileToSetStdin(t *testing.T) {
+	// Cannot run in parallel: modifies os.Stdin
+
+	cfg := testConfig(false, ",", false, false)
+
+	// Create a pipe to simulate stdin
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("failed to create pipe: %v", err)
+	}
+
+	// Write test data to the pipe
+	go func() {
+		defer func() {
+			if err := w.Close(); err != nil {
+				t.Logf("failed to close write pipe: %v", err)
+			}
+		}()
+		_, _ = w.WriteString("alpha\nbeta\ngamma\n")
+	}()
+
+	// Replace stdin temporarily
+	oldStdin := os.Stdin
+	os.Stdin = r
+	defer func() {
+		os.Stdin = oldStdin
+		if err := r.Close(); err != nil {
+			t.Logf("failed to close read pipe: %v", err)
+		}
+	}()
+
+	set, err := fileToSet("-", cfg)
+	if err != nil {
+		t.Fatalf("fileToSet with stdin returned error: %v", err)
+	}
+
+	got := toSortedSlice(set)
+	want := []string{"alpha", "beta", "gamma"}
+	assertStringSlice(t, got, want)
 }
 
 func TestFileToSetDelimiters(t *testing.T) {
