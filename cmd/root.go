@@ -23,6 +23,7 @@ var (
 	delimiter     string
 	ignoreFQDN    bool
 	pipe          bool
+	output        string
 )
 
 // log is the package-level logger instance.
@@ -35,6 +36,7 @@ type config struct {
 	delimiter     string
 	ignoreFQDN    bool
 	pipe          bool
+	output        string
 }
 
 // fileSet associates a file path with its parsed set of normalized lines.
@@ -162,33 +164,62 @@ func toSortedSlice(hs *hashset.Set[string]) []string {
 	return values
 }
 
-// printSet outputs the result sets to stdout.
+// printSet outputs the result sets to stdout or a file.
 // When cfg.pipe is true, it suppresses headers for easier command-line piping.
 // For difference operations without pipe mode, it prints both A-B and B-A results.
+// If cfg.output is set, results are written to the specified file.
 func (r *results) printSet(cfg *config) error {
+	var output *os.File
+	var err error
+
+	if cfg.output != "" {
+		output, err = os.Create(cfg.output)
+		if err != nil {
+			return fmt.Errorf("failed to create output file: %w", err)
+		}
+		defer func() {
+			if cerr := output.Close(); cerr != nil {
+				log.Err(cerr).Msg("failed to close output file")
+			}
+		}()
+	} else {
+		output = os.Stdout
+	}
+
 	if !cfg.pipe {
+		var header string
 		switch r.operation {
 		case "intersection":
-			fmt.Printf("Intersection of %s and %s:\n", r.fileSetA.path, r.fileSetB.path)
+			header = fmt.Sprintf("Intersection of %s and %s:\n", r.fileSetA.path, r.fileSetB.path)
 		case "union":
-			fmt.Printf("Union of %s and %s:\n", r.fileSetA.path, r.fileSetB.path)
+			header = fmt.Sprintf("Union of %s and %s:\n", r.fileSetA.path, r.fileSetB.path)
 		case "difference":
-			fmt.Printf("Difference of %s - %s:\n", r.fileSetA.path, r.fileSetB.path)
+			header = fmt.Sprintf("Difference of %s - %s:\n", r.fileSetA.path, r.fileSetB.path)
 		case "symmetric-difference":
-			fmt.Printf("Symmetric difference of %s and %s:\n", r.fileSetA.path, r.fileSetB.path)
+			header = fmt.Sprintf("Symmetric difference of %s and %s:\n", r.fileSetA.path, r.fileSetB.path)
 		default:
 			return fmt.Errorf("invalid operation: %s", r.operation)
+		}
+		if _, err := fmt.Fprint(output, header); err != nil {
+			return fmt.Errorf("failed to write header: %w", err)
 		}
 	}
 
 	for _, element := range toSortedSlice(r.diffAB) {
-		fmt.Println(element)
+		if _, err := fmt.Fprintln(output, element); err != nil {
+			return fmt.Errorf("failed to write output: %w", err)
+		}
 	}
 
 	if r.operation == "difference" && !cfg.pipe {
-		fmt.Printf("\nDifference of %s - %s:\n", r.fileSetB.path, r.fileSetA.path)
+		header := fmt.Sprintf("\nDifference of %s - %s:\n", r.fileSetB.path, r.fileSetA.path)
+		if _, err := fmt.Fprint(output, header); err != nil {
+			return fmt.Errorf("failed to write header: %w", err)
+		}
 		for _, element := range toSortedSlice(r.diffBA) {
-			fmt.Println(element)
+			if _, err := fmt.Fprintln(output, element); err != nil {
+				return fmt.Errorf("failed to write output: %w", err)
+			}
 		}
 	}
 	return nil
@@ -222,8 +253,7 @@ comma by default, but any character can be specified via the --delimiter flag.`,
 			caseSensitive: caseSensitive,
 			delimiter:     delimiter,
 			ignoreFQDN:    ignoreFQDN,
-			pipe:          pipe,
-		}
+			pipe:          pipe, output: output}
 
 		// Log flag values at debug level
 		log.Debug().
@@ -283,6 +313,7 @@ func init() {
 	rootCmd.Flags().BoolVarP(&caseSensitive, "case-sensitive", "c", false, "preserve case during comparison (default: case-insensitive)")
 	rootCmd.Flags().StringVarP(&delimiter, "delimiter", "d", ",", "delimiter for splitting lines (default: comma)")
 	rootCmd.Flags().BoolVarP(&ignoreFQDN, "ignore-fqdn", "f", false, "strip FQDN suffixes (keep only hostname before first dot)")
+	rootCmd.Flags().StringVarP(&output, "output", "o", "", "write output to file instead of stdout")
 	rootCmd.Flags().BoolVarP(&pipe, "pipe", "p", false, "suppress headers for piped output")
 	rootCmd.Flags().BoolP("intersection", "i", false, "show the intersection of the two files")
 	rootCmd.Flags().BoolP("union", "u", false, "show the union of the two files")

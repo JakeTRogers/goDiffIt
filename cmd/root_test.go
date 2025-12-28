@@ -33,8 +33,7 @@ func testConfig(caseSens bool, delim string, ignoreFQDN, pipeMode bool) *config 
 		caseSensitive: caseSens,
 		delimiter:     delim,
 		ignoreFQDN:    ignoreFQDN,
-		pipe:          pipeMode,
-	}
+		pipe:          pipeMode, output: ""}
 }
 
 // captureOutput captures stdout during fn execution and returns the output.
@@ -78,6 +77,7 @@ func resetRootCmd() {
 	rootCmd.Flags().BoolVarP(&caseSensitive, "case-sensitive", "c", false, "preserve case during comparison")
 	rootCmd.Flags().StringVarP(&delimiter, "delimiter", "d", ",", "delimiter for splitting lines")
 	rootCmd.Flags().BoolVarP(&ignoreFQDN, "ignore-fqdn", "f", false, "strip FQDN suffixes")
+	rootCmd.Flags().StringVarP(&output, "output", "o", "", "write output to file instead of stdout")
 	rootCmd.Flags().BoolVarP(&pipe, "pipe", "p", false, "suppress headers for piped output")
 	rootCmd.Flags().BoolP("intersection", "i", false, "show the intersection of the two files")
 	rootCmd.Flags().BoolP("union", "u", false, "show the union of the two files")
@@ -514,6 +514,92 @@ func TestPrintSetInvalidOperation(t *testing.T) {
 	}
 }
 
+func TestPrintSetOutputFile(t *testing.T) {
+	t.Parallel()
+
+	t.Run("write-to-file", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		outPath := filepath.Join(dir, "output.txt")
+
+		cfg := testConfig(false, ",", false, false)
+		cfg.output = outPath
+
+		r := results{
+			fileSetA:  fileSet{path: "A", set: hashset.New[string]()},
+			fileSetB:  fileSet{path: "B", set: hashset.New[string]()},
+			diffAB:    makeSet("alpha", "beta"),
+			diffBA:    hashset.New[string](),
+			operation: "union",
+		}
+
+		if err := r.printSet(cfg); err != nil {
+			t.Fatalf("printSet returned error: %v", err)
+		}
+
+		content, err := os.ReadFile(outPath)
+		if err != nil {
+			t.Fatalf("failed to read output file: %v", err)
+		}
+
+		got := string(content)
+		want := "Union of A and B:\nalpha\nbeta\n"
+		if got != want {
+			t.Errorf("got:\n%q\nwant:\n%q", got, want)
+		}
+	})
+
+	t.Run("pipe-mode-to-file", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		outPath := filepath.Join(dir, "output.txt")
+
+		cfg := testConfig(false, ",", false, true)
+		cfg.output = outPath
+
+		r := results{
+			fileSetA:  fileSet{path: "A", set: hashset.New[string]()},
+			fileSetB:  fileSet{path: "B", set: hashset.New[string]()},
+			diffAB:    makeSet("item1", "item2"),
+			diffBA:    hashset.New[string](),
+			operation: "intersection",
+		}
+
+		if err := r.printSet(cfg); err != nil {
+			t.Fatalf("printSet returned error: %v", err)
+		}
+
+		content, err := os.ReadFile(outPath)
+		if err != nil {
+			t.Fatalf("failed to read output file: %v", err)
+		}
+
+		got := string(content)
+		want := "item1\nitem2\n"
+		if got != want {
+			t.Errorf("got:\n%q\nwant:\n%q", got, want)
+		}
+	})
+
+	t.Run("invalid-path", func(t *testing.T) {
+		t.Parallel()
+		cfg := testConfig(false, ",", false, false)
+		cfg.output = "/nonexistent/directory/output.txt"
+
+		r := results{
+			fileSetA:  fileSet{path: "A", set: hashset.New[string]()},
+			fileSetB:  fileSet{path: "B", set: hashset.New[string]()},
+			diffAB:    makeSet("test"),
+			diffBA:    hashset.New[string](),
+			operation: "union",
+		}
+
+		if err := r.printSet(cfg); err == nil {
+			t.Fatal("expected error for invalid output path, got nil")
+		}
+	})
+}
+
 // --- toSortedSlice tests ---
 
 func TestToSortedSlice(t *testing.T) {
@@ -643,4 +729,37 @@ func TestCLIIntegration(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCLIOutputFile(t *testing.T) {
+	cliMu.Lock()
+	defer cliMu.Unlock()
+
+	withCLICleanup(t)
+
+	fileA := writeTempFile(t, []string{"alpha", "beta", "gamma"})
+	fileB := writeTempFile(t, []string{"beta", "gamma", "delta"})
+	outPath := filepath.Join(t.TempDir(), "result.txt")
+
+	os.Args = []string{"goDiffIt", "--union", "--pipe", "--output", outPath, fileA, fileB}
+
+	// Should have no output to stdout
+	output := captureOutput(t, func() {
+		Execute()
+	})
+
+	if output != "" {
+		t.Errorf("expected no stdout output when using --output, got: %q", output)
+	}
+
+	// Check file was created and contains expected content
+	content, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("failed to read output file: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(content)), "\n")
+	sort.Strings(lines)
+	want := []string{"alpha", "beta", "delta", "gamma"}
+	assertStringSlice(t, lines, want)
 }
