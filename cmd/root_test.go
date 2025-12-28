@@ -6,12 +6,16 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 
-	"github.com/alexandrestein/gods/sets/hashset"
+	"github.com/emirpasic/gods/v2/sets/hashset"
 )
 
+// writeTempFile creates a temporary file with the given lines and returns its path.
+// The file is automatically cleaned up when the test completes.
 func writeTempFile(t *testing.T, lines []string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -23,30 +27,17 @@ func writeTempFile(t *testing.T, lines []string) string {
 	return path
 }
 
-func withFlags(t *testing.T, cs bool, delim string, ignore bool) {
-	t.Helper()
-	prevCase := caseSensitive
-	prevDelimiter := delimiter
-	prevIgnore := ignoreFQDN
-	caseSensitive = cs
-	delimiter = delim
-	ignoreFQDN = ignore
-	t.Cleanup(func() {
-		caseSensitive = prevCase
-		delimiter = prevDelimiter
-		ignoreFQDN = prevIgnore
-	})
+// testConfig returns a config struct for testing purposes.
+func testConfig(caseSens bool, delim string, ignoreFQDN, pipeMode bool) *config {
+	return &config{
+		caseSensitive: caseSens,
+		delimiter:     delim,
+		ignoreFQDN:    ignoreFQDN,
+		pipe:          pipeMode,
+	}
 }
 
-func withPipe(t *testing.T, value bool) {
-	t.Helper()
-	prev := pipe
-	pipe = value
-	t.Cleanup(func() {
-		pipe = prev
-	})
-}
-
+// captureOutput captures stdout during fn execution and returns the output.
 func captureOutput(t *testing.T, fn func()) string {
 	t.Helper()
 
@@ -81,94 +72,21 @@ func captureOutput(t *testing.T, fn func()) string {
 	return buf.String()
 }
 
+// resetRootCmd resets Cobra flags to their defaults for CLI integration tests.
 func resetRootCmd() {
 	rootCmd.ResetFlags()
-	rootCmd.Flags().BoolVarP(&caseSensitive, "case-sensitive", "c", false, "enable case insensitive comparison")
-	rootCmd.Flags().StringVarP(&delimiter, "delimiter", "d", ",", "delimiter for CSV files, default is comma")
-	rootCmd.Flags().BoolVarP(&ignoreFQDN, "ignore-fqdn", "f", false, "ignore FQDNs")
-	rootCmd.Flags().BoolVarP(&pipe, "pipe", "p", false, "do not print headers to allow the output to be piped")
+	rootCmd.Flags().BoolVarP(&caseSensitive, "case-sensitive", "c", false, "preserve case during comparison")
+	rootCmd.Flags().StringVarP(&delimiter, "delimiter", "d", ",", "delimiter for splitting lines")
+	rootCmd.Flags().BoolVarP(&ignoreFQDN, "ignore-fqdn", "f", false, "strip FQDN suffixes")
+	rootCmd.Flags().BoolVarP(&pipe, "pipe", "p", false, "suppress headers for piped output")
 	rootCmd.Flags().BoolP("intersection", "i", false, "show the intersection of the two files")
 	rootCmd.Flags().BoolP("union", "u", false, "show the union of the two files")
 	rootCmd.MarkFlagsMutuallyExclusive("intersection", "union")
-	rootCmd.PersistentFlags().CountP("verbose", "v", "verbose output")
+	rootCmd.PersistentFlags().CountP("verbose", "v", "increase verbosity")
 }
 
-func TestFileToSetNormalization(t *testing.T) {
-	withFlags(t, false, ",", true)
-
-	path := writeTempFile(t, []string{
-		" host01.example.com , web",
-		"HOST02.example.com,db",
-		"",
-		"host01.example.com , duplicate",
-		"host03.example.com",
-	})
-
-	fs := fileSet{path: path, set: *hashset.New()}
-	if err := fs.fileToSet(); err != nil {
-		t.Fatalf("fileToSet returned error: %v", err)
-	}
-
-	got := convertToSortedStringSlice(fs.set)
-	want := []string{"host01", "host02", "host03"}
-	assertStringSlice(t, got, want)
-}
-
-func TestFileToSetCaseSensitivity(t *testing.T) {
-	lines := []string{"Alpha", "alpha", "ALPHA"}
-	path := writeTempFile(t, lines)
-
-	t.Run("case-sensitive", func(t *testing.T) {
-		withFlags(t, true, ",", false)
-		fs := fileSet{path: path, set: *hashset.New()}
-		if err := fs.fileToSet(); err != nil {
-			t.Fatalf("fileToSet returned error: %v", err)
-		}
-		if fs.set.Size() != len(lines) {
-			t.Fatalf("expected %d unique entries, got %d", len(lines), fs.set.Size())
-		}
-	})
-
-	t.Run("case-insensitive", func(t *testing.T) {
-		withFlags(t, false, ",", false)
-		fs := fileSet{path: path, set: *hashset.New()}
-		if err := fs.fileToSet(); err != nil {
-			t.Fatalf("fileToSet returned error: %v", err)
-		}
-		if fs.set.Size() != 1 {
-			t.Fatalf("expected 1 unique entry when case-insensitive, got %d", fs.set.Size())
-		}
-		if !fs.set.Contains("alpha") {
-			t.Errorf("expected normalized value 'alpha' to be present")
-		}
-	})
-}
-
-func makeSet(values ...string) hashset.Set {
-	hs := hashset.New()
-	for _, v := range values {
-		hs.Add(v)
-	}
-	return *hs
-}
-
-func assertStringSlice(t *testing.T, got, want []string) {
-	t.Helper()
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("got %v, want %v", got, want)
-	}
-}
-
-func makeResults(operation string, setA, setB []string) results {
-	return results{
-		fileSetA:  fileSet{path: "A", set: makeSet(setA...)},
-		fileSetB:  fileSet{path: "B", set: makeSet(setB...)},
-		setAB:     *hashset.New(),
-		setBA:     *hashset.New(),
-		operation: operation,
-	}
-}
-
+// withCLICleanup saves and restores os.Args and Cobra flags for CLI tests.
+// Returns a function to call to perform cleanup (also registered with t.Cleanup).
 func withCLICleanup(t *testing.T) {
 	t.Helper()
 	oldArgs := os.Args
@@ -178,124 +96,136 @@ func withCLICleanup(t *testing.T) {
 	})
 }
 
-func TestResultsDifference(t *testing.T) {
-	withPipe(t, false)
-
-	r := makeResults("", []string{"a", "b", "c"}, []string{"b", "c", "d"})
-	r.difference()
-
-	assertStringSlice(t, convertToSortedStringSlice(r.setAB), []string{"a"})
-	assertStringSlice(t, convertToSortedStringSlice(r.setBA), []string{"d"})
+// makeSet creates a hashset from the given string values.
+func makeSet(values ...string) *hashset.Set[string] {
+	hs := hashset.New[string]()
+	for _, v := range values {
+		hs.Add(v)
+	}
+	return hs
 }
 
-func TestResultsUnion(t *testing.T) {
-	r := makeResults("", []string{"a", "b"}, []string{"b", "c"})
-	r.union()
-
-	assertStringSlice(t, convertToSortedStringSlice(r.setAB), []string{"a", "b", "c"})
-	if r.setBA.Size() != 0 {
-		t.Errorf("expected secondary set to remain empty, got size %d", r.setBA.Size())
+// makeResults creates a results struct for testing set operations.
+func makeResults(setA, setB []string) results {
+	return results{
+		fileSetA: fileSet{path: "A", set: makeSet(setA...)},
+		fileSetB: fileSet{path: "B", set: makeSet(setB...)},
+		diffAB:   hashset.New[string](),
+		diffBA:   hashset.New[string](),
 	}
 }
 
-func TestResultsIntersection(t *testing.T) {
-	r := makeResults("", []string{"a", "b", "c"}, []string{"b", "c", "d"})
-	r.intersection()
-
-	assertStringSlice(t, convertToSortedStringSlice(r.setAB), []string{"b", "c"})
-	if r.setBA.Size() != 0 {
-		t.Errorf("expected secondary set to remain empty, got size %d", r.setBA.Size())
+// assertStringSlice compares two string slices and fails if they differ.
+func assertStringSlice(t *testing.T, got, want []string) {
+	t.Helper()
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
 	}
 }
 
-func TestPrintSetOperations(t *testing.T) {
-	tests := []struct {
-		name      string
-		operation string
-		pipe      bool
-		setAB     []string
-		setBA     []string
-		want      string
-	}{
-		{
-			name:      "difference-full",
-			operation: "difference",
-			pipe:      false,
-			setAB:     []string{"alpha", "beta"},
-			setBA:     []string{"gamma"},
-			want:      "Difference of A - B:\nalpha\nbeta\n\nDifference of B - A:\ngamma\n",
-		},
-		{
-			name:      "difference-pipe",
-			operation: "difference",
-			pipe:      true,
-			setAB:     []string{"alpha", "beta"},
-			setBA:     []string{"gamma"},
-			want:      "alpha\nbeta\n",
-		},
-		{
-			name:      "union-full",
-			operation: "union",
-			pipe:      false,
-			setAB:     []string{"alpha", "beta", "gamma"},
-			want:      "Union of A and B:\nalpha\nbeta\ngamma\n",
-		},
-		{
-			name:      "union-pipe",
-			operation: "union",
-			pipe:      true,
-			setAB:     []string{"item1", "item2"},
-			want:      "item1\nitem2\n",
-		},
-		{
-			name:      "intersection-full",
-			operation: "intersection",
-			pipe:      false,
-			setAB:     []string{"shared"},
-			want:      "Intersection of A and B:\nshared\n",
-		},
-		{
-			name:      "intersection-pipe",
-			operation: "intersection",
-			pipe:      true,
-			setAB:     []string{"shared"},
-			want:      "shared\n",
-		},
-	}
+// --- fileToSet tests ---
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			withPipe(t, tt.pipe)
+func TestFileToSet(t *testing.T) {
+	t.Parallel()
 
-			r := makeResults(tt.operation, nil, nil)
-			for _, v := range tt.setAB {
-				r.setAB.Add(v)
-			}
-			for _, v := range tt.setBA {
-				r.setBA.Add(v)
-			}
-
-			output := captureOutput(t, func() {
-				if err := r.printSet(); err != nil {
-					t.Fatalf("printSet returned error: %v", err)
-				}
-			})
-
-			if output != tt.want {
-				t.Errorf("got:\n%q\nwant:\n%q", output, tt.want)
-			}
+	t.Run("normalization", func(t *testing.T) {
+		t.Parallel()
+		cfg := testConfig(false, ",", true, false)
+		path := writeTempFile(t, []string{
+			" host01.example.com , web",
+			"HOST02.example.com,db",
+			"",
+			"host01.example.com , duplicate",
+			"host03.example.com",
 		})
-	}
-}
 
-func TestPrintSetInvalidOperation(t *testing.T) {
-	r := makeResults("bogus", nil, nil)
-	if err := r.printSet(); err == nil {
-		t.Fatal("expected error for invalid operation, got nil")
-	}
+		set, err := fileToSet(path, cfg)
+		if err != nil {
+			t.Fatalf("fileToSet returned error: %v", err)
+		}
+
+		got := toSortedSlice(set)
+		want := []string{"host01", "host02", "host03"}
+		assertStringSlice(t, got, want)
+	})
+
+	t.Run("case-sensitive", func(t *testing.T) {
+		t.Parallel()
+		lines := []string{"Alpha", "alpha", "ALPHA"}
+		path := writeTempFile(t, lines)
+		cfg := testConfig(true, ",", false, false)
+
+		set, err := fileToSet(path, cfg)
+		if err != nil {
+			t.Fatalf("fileToSet returned error: %v", err)
+		}
+		if set.Size() != len(lines) {
+			t.Fatalf("expected %d unique entries, got %d", len(lines), set.Size())
+		}
+	})
+
+	t.Run("case-insensitive", func(t *testing.T) {
+		t.Parallel()
+		path := writeTempFile(t, []string{"Alpha", "alpha", "ALPHA"})
+		cfg := testConfig(false, ",", false, false)
+
+		set, err := fileToSet(path, cfg)
+		if err != nil {
+			t.Fatalf("fileToSet returned error: %v", err)
+		}
+		if set.Size() != 1 {
+			t.Fatalf("expected 1 unique entry when case-insensitive, got %d", set.Size())
+		}
+		if !set.Contains("alpha") {
+			t.Errorf("expected normalized value 'alpha' to be present")
+		}
+	})
+
+	t.Run("empty-file", func(t *testing.T) {
+		t.Parallel()
+		cfg := testConfig(false, ",", false, false)
+		path := writeTempFile(t, []string{})
+
+		set, err := fileToSet(path, cfg)
+		if err != nil {
+			t.Fatalf("fileToSet returned error on empty file: %v", err)
+		}
+		if set.Size() != 0 {
+			t.Errorf("expected empty set for empty file, got size %d", set.Size())
+		}
+	})
+
+	t.Run("nonexistent-file", func(t *testing.T) {
+		t.Parallel()
+		cfg := testConfig(false, ",", false, false)
+
+		_, err := fileToSet("/nonexistent/path/to/file.txt", cfg)
+		if err == nil {
+			t.Fatalf("expected error for nonexistent file, got nil")
+		}
+		if !strings.Contains(err.Error(), "file does not exist") {
+			t.Errorf("expected 'file does not exist' error, got: %v", err)
+		}
+	})
+
+	t.Run("whitespace-only", func(t *testing.T) {
+		t.Parallel()
+		cfg := testConfig(false, ",", false, false)
+		path := writeTempFile(t, []string{"   ", "\t\t", "", "  \n  "})
+
+		set, err := fileToSet(path, cfg)
+		if err != nil {
+			t.Fatalf("fileToSet returned error: %v", err)
+		}
+		if set.Size() != 0 {
+			t.Errorf("expected empty set for whitespace-only file, got size %d", set.Size())
+		}
+	})
 }
 
 func TestFileToSetDelimiters(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name       string
 		lines      []string
@@ -364,15 +294,16 @@ func TestFileToSetDelimiters(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			withFlags(t, tt.caseSens, tt.delimiter, tt.ignoreFQDN)
+			t.Parallel()
+			cfg := testConfig(tt.caseSens, tt.delimiter, tt.ignoreFQDN, false)
 			path := writeTempFile(t, tt.lines)
 
-			fs := fileSet{path: path, set: *hashset.New()}
-			if err := fs.fileToSet(); err != nil {
+			set, err := fileToSet(path, cfg)
+			if err != nil {
 				t.Fatalf("fileToSet returned error: %v", err)
 			}
 
-			got := convertToSortedStringSlice(fs.set)
+			got := toSortedSlice(set)
 			if !reflect.DeepEqual(got, tt.expected) {
 				t.Errorf("got %v, want %v", got, tt.expected)
 			}
@@ -380,59 +311,188 @@ func TestFileToSetDelimiters(t *testing.T) {
 	}
 }
 
-func TestFileToSetEmptyFile(t *testing.T) {
-	withFlags(t, false, ",", false)
-	path := writeTempFile(t, []string{})
+// --- Set operation tests ---
 
-	fs := fileSet{path: path, set: *hashset.New()}
-	if err := fs.fileToSet(); err != nil {
-		t.Fatalf("fileToSet returned error on empty file: %v", err)
-	}
+func TestResultsDifference(t *testing.T) {
+	t.Parallel()
 
-	if fs.set.Size() != 0 {
-		t.Errorf("expected empty set for empty file, got size %d", fs.set.Size())
+	t.Run("normal-mode", func(t *testing.T) {
+		t.Parallel()
+		cfg := testConfig(false, ",", false, false)
+		r := makeResults([]string{"a", "b", "c"}, []string{"b", "c", "d"})
+		r.difference(cfg)
+
+		assertStringSlice(t, toSortedSlice(r.diffAB), []string{"a"})
+		assertStringSlice(t, toSortedSlice(r.diffBA), []string{"d"})
+	})
+
+	t.Run("pipe-mode", func(t *testing.T) {
+		t.Parallel()
+		cfg := testConfig(false, ",", false, true)
+		r := makeResults([]string{"a", "b", "c"}, []string{"b", "c", "d"})
+		r.difference(cfg)
+
+		assertStringSlice(t, toSortedSlice(r.diffAB), []string{"a"})
+		if r.diffBA.Size() != 0 {
+			t.Errorf("expected diffBA to be empty in pipe mode, got size %d", r.diffBA.Size())
+		}
+	})
+}
+
+func TestResultsUnion(t *testing.T) {
+	t.Parallel()
+	r := makeResults([]string{"a", "b"}, []string{"b", "c"})
+	r.union()
+
+	assertStringSlice(t, toSortedSlice(r.diffAB), []string{"a", "b", "c"})
+	if r.diffBA.Size() != 0 {
+		t.Errorf("expected secondary set to remain empty, got size %d", r.diffBA.Size())
 	}
 }
 
-func TestFileToSetNonexistentFile(t *testing.T) {
-	withFlags(t, false, ",", false)
+func TestResultsIntersection(t *testing.T) {
+	t.Parallel()
+	r := makeResults([]string{"a", "b", "c"}, []string{"b", "c", "d"})
+	r.intersection()
 
-	fs := fileSet{path: "/nonexistent/path/to/file.txt", set: *hashset.New()}
-	err := fs.fileToSet()
-
-	if err == nil {
-		t.Fatalf("expected error for nonexistent file, got nil")
-	}
-	if !strings.Contains(err.Error(), "file does not exist") {
-		t.Errorf("expected 'file does not exist' error, got: %v", err)
+	assertStringSlice(t, toSortedSlice(r.diffAB), []string{"b", "c"})
+	if r.diffBA.Size() != 0 {
+		t.Errorf("expected secondary set to remain empty, got size %d", r.diffBA.Size())
 	}
 }
 
-func TestFileToSetOnlyWhitespace(t *testing.T) {
-	withFlags(t, false, ",", false)
-	path := writeTempFile(t, []string{"   ", "\t\t", "", "  \n  "})
+// --- printSet tests ---
 
-	fs := fileSet{path: path, set: *hashset.New()}
-	if err := fs.fileToSet(); err != nil {
-		t.Fatalf("fileToSet returned error: %v", err)
+func TestPrintSetOperations(t *testing.T) {
+	// Cannot run in parallel: captureOutput modifies global os.Stdout
+
+	tests := []struct {
+		name      string
+		operation string
+		pipe      bool
+		diffAB    []string
+		diffBA    []string
+		want      string
+	}{
+		{
+			name:      "difference-full",
+			operation: "difference",
+			pipe:      false,
+			diffAB:    []string{"alpha", "beta"},
+			diffBA:    []string{"gamma"},
+			want:      "Difference of A - B:\nalpha\nbeta\n\nDifference of B - A:\ngamma\n",
+		},
+		{
+			name:      "difference-pipe",
+			operation: "difference",
+			pipe:      true,
+			diffAB:    []string{"alpha", "beta"},
+			diffBA:    []string{"gamma"},
+			want:      "alpha\nbeta\n",
+		},
+		{
+			name:      "union-full",
+			operation: "union",
+			pipe:      false,
+			diffAB:    []string{"alpha", "beta", "gamma"},
+			want:      "Union of A and B:\nalpha\nbeta\ngamma\n",
+		},
+		{
+			name:      "union-pipe",
+			operation: "union",
+			pipe:      true,
+			diffAB:    []string{"item1", "item2"},
+			want:      "item1\nitem2\n",
+		},
+		{
+			name:      "intersection-full",
+			operation: "intersection",
+			pipe:      false,
+			diffAB:    []string{"shared"},
+			want:      "Intersection of A and B:\nshared\n",
+		},
+		{
+			name:      "intersection-pipe",
+			operation: "intersection",
+			pipe:      true,
+			diffAB:    []string{"shared"},
+			want:      "shared\n",
+		},
 	}
 
-	if fs.set.Size() != 0 {
-		t.Errorf("expected empty set for whitespace-only file, got size %d", fs.set.Size())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig(false, ",", false, tt.pipe)
+
+			r := results{
+				fileSetA:  fileSet{path: "A", set: hashset.New[string]()},
+				fileSetB:  fileSet{path: "B", set: hashset.New[string]()},
+				diffAB:    hashset.New[string](),
+				diffBA:    hashset.New[string](),
+				operation: tt.operation,
+			}
+			for _, v := range tt.diffAB {
+				r.diffAB.Add(v)
+			}
+			for _, v := range tt.diffBA {
+				r.diffBA.Add(v)
+			}
+
+			output := captureOutput(t, func() {
+				if err := r.printSet(cfg); err != nil {
+					t.Fatalf("printSet returned error: %v", err)
+				}
+			})
+
+			if output != tt.want {
+				t.Errorf("got:\n%q\nwant:\n%q", output, tt.want)
+			}
+		})
 	}
 }
 
-func TestResultsDifferenceWithPipeMode(t *testing.T) {
-	withPipe(t, true)
-
-	r := makeResults("", []string{"a", "b", "c"}, []string{"b", "c", "d"})
-	r.difference()
-
-	assertStringSlice(t, convertToSortedStringSlice(r.setAB), []string{"a"})
-	if r.setBA.Size() != 0 {
-		t.Errorf("expected setBA to be empty in pipe mode, got size %d", r.setBA.Size())
+func TestPrintSetInvalidOperation(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig(false, ",", false, false)
+	r := results{
+		fileSetA:  fileSet{path: "A", set: hashset.New[string]()},
+		fileSetB:  fileSet{path: "B", set: hashset.New[string]()},
+		diffAB:    hashset.New[string](),
+		diffBA:    hashset.New[string](),
+		operation: "bogus",
+	}
+	if err := r.printSet(cfg); err == nil {
+		t.Fatal("expected error for invalid operation, got nil")
 	}
 }
+
+// --- toSortedSlice tests ---
+
+func TestToSortedSlice(t *testing.T) {
+	t.Parallel()
+	hs := hashset.New[string]()
+	hs.Add("zebra")
+	hs.Add("apple")
+	hs.Add("mango")
+
+	got := toSortedSlice(hs)
+	want := []string{"apple", "mango", "zebra"}
+	assertStringSlice(t, got, want)
+}
+
+func TestToSortedSliceEmpty(t *testing.T) {
+	t.Parallel()
+	hs := hashset.New[string]()
+	got := toSortedSlice(hs)
+	if len(got) != 0 {
+		t.Errorf("expected empty slice, got %v", got)
+	}
+}
+
+// --- CLI integration tests ---
+// These tests must NOT run in parallel as they modify global state (os.Args, flags).
+
+var cliMu sync.Mutex
 
 func TestCLIIntegration(t *testing.T) {
 	tests := []struct {
@@ -474,10 +534,27 @@ func TestCLIIntegration(t *testing.T) {
 			contains: []string{"host1"},
 			excludes: []string{"host1.example.com"},
 		},
+		{
+			name:  "case-sensitive",
+			args:  []string{"--case-sensitive", "--pipe"},
+			fileA: []string{"Alpha", "beta"},
+			fileB: []string{"alpha", "beta"},
+			exact: []string{"Alpha"},
+		},
+		{
+			name:  "custom-delimiter",
+			args:  []string{"--delimiter", "|", "--pipe"},
+			fileA: []string{"host1|web", "host2|db"},
+			fileB: []string{"host2", "host3"},
+			exact: []string{"host1"},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			cliMu.Lock()
+			defer cliMu.Unlock()
+
 			withCLICleanup(t)
 
 			pathA := writeTempFile(t, tt.fileA)
@@ -503,7 +580,11 @@ func TestCLIIntegration(t *testing.T) {
 
 			if len(tt.exact) > 0 {
 				lines := strings.Split(strings.TrimSpace(output), "\n")
-				assertStringSlice(t, lines, tt.exact)
+				sort.Strings(lines)
+				want := make([]string, len(tt.exact))
+				copy(want, tt.exact)
+				sort.Strings(want)
+				assertStringSlice(t, lines, want)
 			}
 		})
 	}

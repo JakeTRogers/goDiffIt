@@ -1,6 +1,7 @@
-/*
-Copyright © 2024 Jake Rogers <code@supportoss.org>
-*/
+// Copyright © 2025 Jake Rogers <code@supportoss.org>
+
+// Package cmd implements the goDiffIt CLI using Cobra.
+// It provides set operations (difference, intersection, union) for comparing files as sets of lines.
 package cmd
 
 import (
@@ -11,144 +12,145 @@ import (
 	"strings"
 
 	"github.com/JakeTRogers/goDiffIt/logger"
-	"github.com/alexandrestein/gods/sets/hashset"
+	"github.com/emirpasic/gods/v2/sets/hashset"
 	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 )
 
+// Package-level flag variables bound to Cobra flags.
+// These are copied into a config struct at runtime for testability.
 var (
 	caseSensitive bool
 	delimiter     string
 	ignoreFQDN    bool
 	pipe          bool
-	l             = logger.GetLogger()
 )
 
-type fileSet struct {
-	path string
-	set  hashset.Set
+// log is the package-level logger instance.
+var log = logger.GetLogger()
+
+// config holds runtime configuration for file processing.
+// It is populated from CLI flags and passed explicitly to functions.
+type config struct {
+	caseSensitive bool
+	delimiter     string
+	ignoreFQDN    bool
+	pipe          bool
 }
 
+// fileSet associates a file path with its parsed set of normalized lines.
+type fileSet struct {
+	path string
+	set  *hashset.Set[string]
+}
+
+// results holds the input file sets, operation name, and computed result sets.
+// diffAB contains elements in A but not in B (or union/intersection result).
+// diffBA contains elements in B but not in A (only used for difference operation).
 type results struct {
 	fileSetA  fileSet
 	fileSetB  fileSet
 	operation string
-	setAB     hashset.Set
-	setBA     hashset.Set
+	diffAB    *hashset.Set[string]
+	diffBA    *hashset.Set[string]
 }
 
-/*
-fileToSet reads the file specified by fs.path and adds each non-empty line to the set.
-If caseSensitive is false, it converts each line to lowercase before adding it to the set.
-If ignoreFQDN is true, it splits each line by dot and adds the first element to the set.
-Returns an error if the file does not exist or if there is an error while reading the file.
-*/
-func (fs *fileSet) fileToSet() error {
-	// ensure the file exists
-	if _, err := os.Stat(fs.path); os.IsNotExist(err) {
-		return fmt.Errorf("file does not exist: %w", err)
+// fileToSet reads the file at the given path and returns a set of normalized lines.
+// Lines are trimmed, optionally lowercased, split by delimiter, and optionally
+// have FQDN suffixes stripped based on the provided config.
+func fileToSet(path string, cfg *config) (*hashset.Set[string], error) {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil, fmt.Errorf("file does not exist: %w", err)
 	}
 
-	// read the file
-	file, err := os.Open(fs.path)
+	file, err := os.Open(path)
 	if err != nil {
-		return fmt.Errorf("failed to open file: %w", err)
+		return nil, fmt.Errorf("failed to open file: %w", err)
 	}
 	defer func() {
 		if cerr := file.Close(); cerr != nil {
-			l.Err(cerr).Msg("failed to close file")
+			log.Err(cerr).Msg("failed to close file")
 		}
 	}()
 
-	// add each line to the set
+	set := hashset.New[string]()
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		// if line is empty or contains only whitespace, skip it
-		if len(line) == 0 {
+		if line == "" {
 			continue
 		}
-		// convert the line to lowercase if caseSensitive is false
-		if !caseSensitive {
+		if !cfg.caseSensitive {
 			line = strings.ToLower(line)
 		}
-		// split the line by delimiter and take the first element
-		if strings.Contains(line, delimiter) {
-			line = strings.TrimSpace(strings.Split(line, delimiter)[0])
+		if strings.Contains(line, cfg.delimiter) {
+			line = strings.TrimSpace(strings.Split(line, cfg.delimiter)[0])
 		}
-		// split the line by dot and take the first element if ignoreFQDN is set
-		if ignoreFQDN {
+		if cfg.ignoreFQDN {
 			line = strings.TrimSpace(strings.Split(line, ".")[0])
 		}
-		fs.set.Add(line)
+		set.Add(line)
 	}
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("failed to scan file: %w", err)
+		return nil, fmt.Errorf("failed to scan file: %w", err)
 	}
-	return nil
+	return set, nil
 }
 
-/*
-difference calculates the difference between two sets and stores the result in the results struct.  It iterates over
-each element in fileSetA and checks if it exists in fileSetB. If an element is not found in fileSetB, it is added to the
-resultAB set. If the 'pipe' flag is not set, it also iterates over each element in fileSetB and checks if it exists in
-fileSetA. If an element is not found in fileSetA, it is added to the resultBA set.
-*/
-func (r *results) difference() {
+// difference calculates the set difference between fileSetA and fileSetB.
+// It populates diffAB with elements in A but not in B.
+// If cfg.pipe is false, it also populates diffBA with elements in B but not in A.
+func (r *results) difference(cfg *config) {
 	r.operation = "difference"
 	for _, element := range r.fileSetA.set.Values() {
 		if !r.fileSetB.set.Contains(element) {
-			r.setAB.Add(element)
+			r.diffAB.Add(element)
 		}
 	}
-	if !pipe {
-		for _, element := range r.fileSetB.set.Values() {
-			if !r.fileSetA.set.Contains(element) {
-				r.setBA.Add(element)
-			}
+	if cfg.pipe {
+		return
+	}
+	for _, element := range r.fileSetB.set.Values() {
+		if !r.fileSetA.set.Contains(element) {
+			r.diffBA.Add(element)
 		}
 	}
 }
 
-// union calculates the union of two sets and stores the result in the results struct.
+// union calculates the union of fileSetA and fileSetB.
+// It populates diffAB with all elements from both sets.
 func (r *results) union() {
 	r.operation = "union"
 	for _, element := range r.fileSetA.set.Values() {
-		r.setAB.Add(element)
+		r.diffAB.Add(element)
 	}
 	for _, element := range r.fileSetB.set.Values() {
-		r.setAB.Add(element)
+		r.diffAB.Add(element)
 	}
 }
 
-// intersection calculates the intersection of two sets and stores the result in the results struct.
+// intersection calculates the intersection of fileSetA and fileSetB.
+// It populates diffAB with elements present in both sets.
 func (r *results) intersection() {
 	r.operation = "intersection"
 	for _, element := range r.fileSetA.set.Values() {
 		if r.fileSetB.set.Contains(element) {
-			r.setAB.Add(element)
+			r.diffAB.Add(element)
 		}
 	}
 }
 
-// convertToSortedStringSlice converts a hashset.Set to a sorted string slice.
-func convertToSortedStringSlice(hs hashset.Set) []string {
-	s := make([]string, hs.Size())
-	for i, v := range hs.Values() {
-		s[i] = v.(string)
-	}
-	sort.Strings(s)
-	return s
+// toSortedSlice converts a hashset to a sorted string slice.
+func toSortedSlice(hs *hashset.Set[string]) []string {
+	values := hs.Values()
+	sort.Strings(values)
+	return values
 }
 
-/*
-printSet prints the result sets based on the operation performed.  The function handles printing the second set when the
-operation is "difference", showing but A - B and B - A.  If the pipe flag is true, and the operation is "difference", it
-only prints the first set to allow command line piping.
-It returns an error if the operation is invalid.
-*/
-func (r *results) printSet() error {
-	if !pipe {
+// printSet outputs the result sets to stdout.
+// When cfg.pipe is true, it suppresses headers for easier command-line piping.
+// For difference operations without pipe mode, it prints both A-B and B-A results.
+func (r *results) printSet(cfg *config) error {
+	if !cfg.pipe {
 		switch r.operation {
 		case "intersection":
 			fmt.Printf("Intersection of %s and %s:\n", r.fileSetA.path, r.fileSetB.path)
@@ -160,13 +162,14 @@ func (r *results) printSet() error {
 			return fmt.Errorf("invalid operation: %s", r.operation)
 		}
 	}
-	for _, element := range convertToSortedStringSlice(r.setAB) {
+
+	for _, element := range toSortedSlice(r.diffAB) {
 		fmt.Println(element)
 	}
-	// for difference, print the second set showing B - A if the pipe flag is not set
-	if r.operation == "difference" && !pipe {
+
+	if r.operation == "difference" && !cfg.pipe {
 		fmt.Printf("\nDifference of %s - %s:\n", r.fileSetB.path, r.fileSetA.path)
-		for _, element := range convertToSortedStringSlice(r.setBA) {
+		for _, element := range toSortedSlice(r.diffBA) {
 			fmt.Println(element)
 		}
 	}
@@ -196,57 +199,72 @@ comma by default, but any character can be specified via the --delimiter flag.`,
 		verboseCount, _ := cmd.Flags().GetCount("verbose")
 		logger.SetLogLevel(verboseCount)
 	},
-	Run: func(cmd *cobra.Command, args []string) {
-		// loop through flags and print their values
-		cmd.Flags().VisitAll(func(f *pflag.Flag) {
-			l.Debug().Str("flag", f.Name).Str("value", f.Value.String()).Send()
-		})
-
-		fsA := fileSet{path: args[0], set: *hashset.New()}
-		if err := fsA.fileToSet(); err != nil {
-			l.Fatal().Err(err).Send()
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg := &config{
+			caseSensitive: caseSensitive,
+			delimiter:     delimiter,
+			ignoreFQDN:    ignoreFQDN,
+			pipe:          pipe,
 		}
-		fsB := fileSet{path: args[1], set: *hashset.New()}
-		if err := fsB.fileToSet(); err != nil {
-			l.Fatal().Err(err).Send()
+
+		// Log flag values at debug level
+		log.Debug().
+			Bool("case-sensitive", cfg.caseSensitive).
+			Str("delimiter", cfg.delimiter).
+			Bool("ignore-fqdn", cfg.ignoreFQDN).
+			Bool("pipe", cfg.pipe).
+			Msg("flags")
+
+		setA, err := fileToSet(args[0], cfg)
+		if err != nil {
+			return fmt.Errorf("file A: %w", err)
+		}
+		setB, err := fileToSet(args[1], cfg)
+		if err != nil {
+			return fmt.Errorf("file B: %w", err)
 		}
 
 		rs := results{
-			fileSetA: fsA,
-			fileSetB: fsB,
-			setAB:    *hashset.New(),
-			setBA:    *hashset.New(),
+			fileSetA: fileSet{path: args[0], set: setA},
+			fileSetB: fileSet{path: args[1], set: setB},
+			diffAB:   hashset.New[string](),
+			diffBA:   hashset.New[string](),
 		}
-		l.Debug().Str("rs.fileSetA.path", fsA.path).Send()
-		l.Debug().Str("rs.fileSetB.path", fsB.path).Send()
-		if cmd.Flags().Changed("intersection") {
+
+		log.Debug().Str("fileA", rs.fileSetA.path).Str("fileB", rs.fileSetB.path).Msg("processing")
+
+		intersection, _ := cmd.Flags().GetBool("intersection")
+		union, _ := cmd.Flags().GetBool("union")
+
+		switch {
+		case intersection:
 			rs.intersection()
-		} else if cmd.Flags().Changed("union") {
+		case union:
 			rs.union()
-		} else {
-			rs.difference()
+		default:
+			rs.difference(cfg)
 		}
-		l.Debug().Str("rs.operation", rs.operation).Send()
-		if err := rs.printSet(); err != nil {
-			l.Fatal().Err(err).Send()
-		}
+
+		log.Debug().Str("operation", rs.operation).Msg("completed")
+
+		return rs.printSet(cfg)
 	},
 }
 
+// Execute runs the root command and exits with code 1 on error.
 func Execute() {
-	err := rootCmd.Execute()
-	if err != nil {
+	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
 }
 
 func init() {
-	rootCmd.Flags().BoolVarP(&caseSensitive, "case-sensitive", "c", false, "enable case insensitive comparison")
-	rootCmd.Flags().StringVarP(&delimiter, "delimiter", "d", ",", "delimiter for CSV files, default is comma")
-	rootCmd.Flags().BoolVarP(&ignoreFQDN, "ignore-fqdn", "f", false, "ignore FQDNs")
-	rootCmd.Flags().BoolVarP(&pipe, "pipe", "p", false, "do not print headers to allow the output to be piped")
+	rootCmd.Flags().BoolVarP(&caseSensitive, "case-sensitive", "c", false, "preserve case during comparison (default: case-insensitive)")
+	rootCmd.Flags().StringVarP(&delimiter, "delimiter", "d", ",", "delimiter for splitting lines (default: comma)")
+	rootCmd.Flags().BoolVarP(&ignoreFQDN, "ignore-fqdn", "f", false, "strip FQDN suffixes (keep only hostname before first dot)")
+	rootCmd.Flags().BoolVarP(&pipe, "pipe", "p", false, "suppress headers for piped output")
 	rootCmd.Flags().BoolP("intersection", "i", false, "show the intersection of the two files")
 	rootCmd.Flags().BoolP("union", "u", false, "show the union of the two files")
 	rootCmd.MarkFlagsMutuallyExclusive("intersection", "union")
-	rootCmd.PersistentFlags().CountP("verbose", "v", "verbose output")
+	rootCmd.PersistentFlags().CountP("verbose", "v", "increase verbosity (-v=warn, -vv=info, -vvv=debug, -vvvv=trace)")
 }
