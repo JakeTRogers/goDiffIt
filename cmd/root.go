@@ -25,6 +25,7 @@ var (
 	pipe          bool
 	output        string
 	count         bool
+	stats         bool
 )
 
 // log is the package-level logger instance.
@@ -39,6 +40,7 @@ type config struct {
 	pipe          bool
 	output        string
 	count         bool
+	stats         bool
 }
 
 // fileSet associates a file path with its parsed set of normalized lines.
@@ -206,6 +208,50 @@ func (r *results) printSet(cfg *config) error {
 		return nil
 	}
 
+	// Stats mode: output detailed statistics
+	if cfg.stats {
+		sizeA := r.fileSetA.set.Size()
+		sizeB := r.fileSetB.set.Size()
+
+		if _, err := fmt.Fprintf(output, "File A: %d unique lines\n", sizeA); err != nil {
+			return fmt.Errorf("failed to write stats: %w", err)
+		}
+		if _, err := fmt.Fprintf(output, "File B: %d unique lines\n", sizeB); err != nil {
+			return fmt.Errorf("failed to write stats: %w", err)
+		}
+
+		// Calculate overlap (intersection)
+		overlap := 0
+		for _, element := range r.fileSetA.set.Values() {
+			if r.fileSetB.set.Contains(element) {
+				overlap++
+			}
+		}
+
+		if sizeA > 0 && sizeB > 0 {
+			pctA := float64(overlap) / float64(sizeA) * 100
+			pctB := float64(overlap) / float64(sizeB) * 100
+			if _, err := fmt.Fprintf(output, "Overlap: %d (%.1f%% of A, %.1f%% of B)\n", overlap, pctA, pctB); err != nil {
+				return fmt.Errorf("failed to write stats: %w", err)
+			}
+		} else {
+			if _, err := fmt.Fprintf(output, "Overlap: %d\n", overlap); err != nil {
+				return fmt.Errorf("failed to write stats: %w", err)
+			}
+		}
+
+		onlyA := sizeA - overlap
+		onlyB := sizeB - overlap
+		if _, err := fmt.Fprintf(output, "Only in A: %d\n", onlyA); err != nil {
+			return fmt.Errorf("failed to write stats: %w", err)
+		}
+		if _, err := fmt.Fprintf(output, "Only in B: %d\n", onlyB); err != nil {
+			return fmt.Errorf("failed to write stats: %w", err)
+		}
+
+		return nil
+	}
+
 	if !cfg.pipe {
 		var header string
 		switch r.operation {
@@ -275,8 +321,7 @@ comma by default, but any character can be specified via the --delimiter flag.`,
 			ignoreFQDN:    ignoreFQDN,
 			pipe:          pipe,
 			output:        output,
-			count:         count,
-		}
+			count:         count, stats: stats}
 
 		// Log flag values at debug level
 		log.Debug().
@@ -339,6 +384,7 @@ func init() {
 	rootCmd.Flags().BoolVarP(&ignoreFQDN, "ignore-fqdn", "f", false, "strip FQDN suffixes (keep only hostname before first dot)")
 	rootCmd.Flags().StringVarP(&output, "output", "o", "", "write output to file instead of stdout")
 	rootCmd.Flags().BoolVarP(&pipe, "pipe", "p", false, "suppress headers for piped output")
+	rootCmd.Flags().BoolVar(&stats, "stats", false, "show statistics about the file sets (size, overlap, unique elements)")
 	rootCmd.Flags().BoolP("intersection", "i", false, "show the intersection of the two files")
 	rootCmd.Flags().BoolP("union", "u", false, "show the union of the two files")
 	rootCmd.Flags().BoolP("symmetric-difference", "s", false, "show the symmetric difference (XOR) of the two files")

@@ -35,8 +35,7 @@ func testConfig(caseSens bool, delim string, ignoreFQDN, pipeMode bool) *config 
 		ignoreFQDN:    ignoreFQDN,
 		pipe:          pipeMode,
 		output:        "",
-		count:         false,
-	}
+		count:         false, stats: false}
 }
 
 // captureOutput captures stdout during fn execution and returns the output.
@@ -83,6 +82,7 @@ func resetRootCmd() {
 	rootCmd.Flags().BoolVarP(&ignoreFQDN, "ignore-fqdn", "f", false, "strip FQDN suffixes")
 	rootCmd.Flags().StringVarP(&output, "output", "o", "", "write output to file instead of stdout")
 	rootCmd.Flags().BoolVarP(&pipe, "pipe", "p", false, "suppress headers for piped output")
+	rootCmd.Flags().BoolVar(&stats, "stats", false, "show statistics about the file sets (size, overlap, unique elements)")
 	rootCmd.Flags().BoolP("intersection", "i", false, "show the intersection of the two files")
 	rootCmd.Flags().BoolP("union", "u", false, "show the union of the two files")
 	rootCmd.Flags().BoolP("symmetric-difference", "s", false, "show the symmetric difference (XOR) of the two files")
@@ -728,6 +728,148 @@ func TestPrintSetCountMode(t *testing.T) {
 	})
 }
 
+func TestPrintSetStatsMode(t *testing.T) {
+	// Cannot run in parallel: captureOutput modifies global os.Stdout
+
+	t.Run("basic-stats", func(t *testing.T) {
+		cfg := testConfig(false, ",", false, false)
+		cfg.stats = true
+
+		// Create sets where A has 5 elements, B has 4, with 3 overlapping
+		setA := makeSet("a", "b", "c", "d", "e")
+		setB := makeSet("b", "c", "d", "f")
+
+		r := results{
+			fileSetA: fileSet{path: "A", set: setA},
+			fileSetB: fileSet{path: "B", set: setB},
+			diffAB:   hashset.New[string](),
+			diffBA:   hashset.New[string](),
+		}
+
+		output := captureOutput(t, func() {
+			if err := r.printSet(cfg); err != nil {
+				t.Fatalf("printSet returned error: %v", err)
+			}
+		})
+
+		// Check for expected output
+		if !strings.Contains(output, "File A: 5 unique lines") {
+			t.Errorf("expected 'File A: 5 unique lines', got: %q", output)
+		}
+		if !strings.Contains(output, "File B: 4 unique lines") {
+			t.Errorf("expected 'File B: 4 unique lines', got: %q", output)
+		}
+		if !strings.Contains(output, "Overlap: 3") {
+			t.Errorf("expected 'Overlap: 3', got: %q", output)
+		}
+		if !strings.Contains(output, "60.0% of A") {
+			t.Errorf("expected '60.0%% of A', got: %q", output)
+		}
+		if !strings.Contains(output, "75.0% of B") {
+			t.Errorf("expected '75.0%% of B', got: %q", output)
+		}
+		if !strings.Contains(output, "Only in A: 2") {
+			t.Errorf("expected 'Only in A: 2', got: %q", output)
+		}
+		if !strings.Contains(output, "Only in B: 1") {
+			t.Errorf("expected 'Only in B: 1', got: %q", output)
+		}
+	})
+
+	t.Run("no-overlap", func(t *testing.T) {
+		cfg := testConfig(false, ",", false, false)
+		cfg.stats = true
+
+		setA := makeSet("a", "b")
+		setB := makeSet("c", "d")
+
+		r := results{
+			fileSetA: fileSet{path: "A", set: setA},
+			fileSetB: fileSet{path: "B", set: setB},
+			diffAB:   hashset.New[string](),
+			diffBA:   hashset.New[string](),
+		}
+
+		output := captureOutput(t, func() {
+			if err := r.printSet(cfg); err != nil {
+				t.Fatalf("printSet returned error: %v", err)
+			}
+		})
+
+		if !strings.Contains(output, "Overlap: 0 (0.0% of A, 0.0% of B)") {
+			t.Errorf("expected no overlap with percentages, got: %q", output)
+		}
+		if !strings.Contains(output, "Only in A: 2") {
+			t.Errorf("expected 'Only in A: 2', got: %q", output)
+		}
+		if !strings.Contains(output, "Only in B: 2") {
+			t.Errorf("expected 'Only in B: 2', got: %q", output)
+		}
+	})
+
+	t.Run("complete-overlap", func(t *testing.T) {
+		cfg := testConfig(false, ",", false, false)
+		cfg.stats = true
+
+		setA := makeSet("a", "b", "c")
+		setB := makeSet("a", "b", "c")
+
+		r := results{
+			fileSetA: fileSet{path: "A", set: setA},
+			fileSetB: fileSet{path: "B", set: setB},
+			diffAB:   hashset.New[string](),
+			diffBA:   hashset.New[string](),
+		}
+
+		output := captureOutput(t, func() {
+			if err := r.printSet(cfg); err != nil {
+				t.Fatalf("printSet returned error: %v", err)
+			}
+		})
+
+		if !strings.Contains(output, "Overlap: 3 (100.0% of A, 100.0% of B)") {
+			t.Errorf("expected complete overlap, got: %q", output)
+		}
+		if !strings.Contains(output, "Only in A: 0") {
+			t.Errorf("expected 'Only in A: 0', got: %q", output)
+		}
+		if !strings.Contains(output, "Only in B: 0") {
+			t.Errorf("expected 'Only in B: 0', got: %q", output)
+		}
+	})
+
+	t.Run("empty-files", func(t *testing.T) {
+		cfg := testConfig(false, ",", false, false)
+		cfg.stats = true
+
+		setA := hashset.New[string]()
+		setB := hashset.New[string]()
+
+		r := results{
+			fileSetA: fileSet{path: "A", set: setA},
+			fileSetB: fileSet{path: "B", set: setB},
+			diffAB:   hashset.New[string](),
+			diffBA:   hashset.New[string](),
+		}
+
+		output := captureOutput(t, func() {
+			if err := r.printSet(cfg); err != nil {
+				t.Fatalf("printSet returned error: %v", err)
+			}
+		})
+
+		if !strings.Contains(output, "File A: 0 unique lines") {
+			t.Errorf("expected 'File A: 0 unique lines', got: %q", output)
+		}
+		if !strings.Contains(output, "File B: 0 unique lines") {
+			t.Errorf("expected 'File B: 0 unique lines', got: %q", output)
+		}
+		if !strings.Contains(output, "Overlap: 0") {
+			t.Errorf("expected 'Overlap: 0', got: %q", output)
+		}
+	})
+}
+
 // --- toSortedSlice tests ---
 
 func TestToSortedSlice(t *testing.T) {
@@ -955,4 +1097,44 @@ func TestCLICountMode(t *testing.T) {
 			t.Errorf("expected '2', got: %q", output)
 		}
 	})
+}
+
+func TestCLIStatsMode(t *testing.T) {
+	cliMu.Lock()
+	defer cliMu.Unlock()
+
+	withCLICleanup(t)
+
+	// Create test files: A has 3 elements, B has 3 elements, 2 overlapping
+	fileA := writeTempFile(t, []string{"alpha", "beta", "gamma"})
+	fileB := writeTempFile(t, []string{"beta", "gamma", "delta"})
+
+	os.Args = []string{"goDiffIt", "--stats", fileA, fileB}
+
+	output := captureOutput(t, func() {
+		Execute()
+	})
+
+	// Verify expected statistics
+	if !strings.Contains(output, "File A: 3 unique lines") {
+		t.Errorf("expected 'File A: 3 unique lines', got: %q", output)
+	}
+	if !strings.Contains(output, "File B: 3 unique lines") {
+		t.Errorf("expected 'File B: 3 unique lines', got: %q", output)
+	}
+	if !strings.Contains(output, "Overlap: 2") {
+		t.Errorf("expected 'Overlap: 2', got: %q", output)
+	}
+	if !strings.Contains(output, "66.7% of A") {
+		t.Errorf("expected '66.7%% of A', got: %q", output)
+	}
+	if !strings.Contains(output, "66.7% of B") {
+		t.Errorf("expected '66.7%% of B', got: %q", output)
+	}
+	if !strings.Contains(output, "Only in A: 1") {
+		t.Errorf("expected 'Only in A: 1', got: %q", output)
+	}
+	if !strings.Contains(output, "Only in B: 1") {
+		t.Errorf("expected 'Only in B: 1', got: %q", output)
+	}
 }
