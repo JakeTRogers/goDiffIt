@@ -28,6 +28,8 @@ var (
 	output        string
 	count         bool
 	stats         bool
+	trimPrefix    string
+	trimSuffix    string
 )
 
 // log is the package-level logger instance.
@@ -44,6 +46,8 @@ type config struct {
 	output        string
 	count         bool
 	stats         bool
+	trimPrefix    string
+	trimSuffix    string
 }
 
 // fileSet associates a file path with its parsed set of normalized lines.
@@ -116,6 +120,12 @@ func fileToSet(path string, cfg *config) (*hashset.Set[string], error) {
 		}
 		if cfg.ignoreFQDN {
 			line = strings.TrimSpace(strings.Split(line, ".")[0])
+		}
+		if cfg.trimPrefix != "" {
+			line = strings.TrimPrefix(line, cfg.trimPrefix)
+		}
+		if cfg.trimSuffix != "" {
+			line = strings.TrimSuffix(line, cfg.trimSuffix)
 		}
 		if line != "" {
 			set.Add(line)
@@ -348,6 +358,8 @@ comma by default, but any character can be specified via the --delimiter flag.`,
 			output:        output,
 			count:         count,
 			stats:         stats,
+			trimPrefix:    trimPrefix,
+			trimSuffix:    trimSuffix,
 		}
 
 		// Compile extract regex if provided
@@ -422,6 +434,8 @@ func init() {
 	rootCmd.Flags().StringVarP(&output, "output", "o", "", "write output to file instead of stdout")
 	rootCmd.Flags().BoolVarP(&pipe, "pipe", "p", false, "suppress headers for piped output")
 	rootCmd.Flags().BoolVar(&stats, "stats", false, "show statistics about the file sets (size, overlap, unique elements)")
+	rootCmd.Flags().StringVar(&trimPrefix, "trim-prefix", "", "remove specified prefix from each line")
+	rootCmd.Flags().StringVar(&trimSuffix, "trim-suffix", "", "remove specified suffix from each line")
 	rootCmd.Flags().BoolP("intersection", "i", false, "show the intersection of the two files")
 	rootCmd.Flags().BoolP("union", "u", false, "show the union of the two files")
 	rootCmd.Flags().BoolP("symmetric-difference", "s", false, "show the symmetric difference (XOR) of the two files")

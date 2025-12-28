@@ -39,6 +39,8 @@ func testConfig(caseSens bool, delim string, ignoreFQDN, pipeMode bool) *config 
 		count:         false,
 		stats:         false,
 		extract:       nil,
+		trimPrefix:    "",
+		trimSuffix:    "",
 	}
 }
 
@@ -88,6 +90,8 @@ func resetRootCmd() {
 	rootCmd.Flags().StringVarP(&output, "output", "o", "", "write output to file instead of stdout")
 	rootCmd.Flags().BoolVarP(&pipe, "pipe", "p", false, "suppress headers for piped output")
 	rootCmd.Flags().BoolVar(&stats, "stats", false, "show statistics about the file sets (size, overlap, unique elements)")
+	rootCmd.Flags().StringVar(&trimPrefix, "trim-prefix", "", "remove specified prefix from each line")
+	rootCmd.Flags().StringVar(&trimSuffix, "trim-suffix", "", "remove specified suffix from each line")
 	rootCmd.Flags().BoolP("intersection", "i", false, "show the intersection of the two files")
 	rootCmd.Flags().BoolP("union", "u", false, "show the union of the two files")
 	rootCmd.Flags().BoolP("symmetric-difference", "s", false, "show the symmetric difference (XOR) of the two files")
@@ -408,6 +412,74 @@ func TestFileToSetExtract(t *testing.T) {
 			t.Parallel()
 			cfg := testConfig(false, ",", false, false)
 			cfg.extract = regexp.MustCompile(tt.pattern)
+			path := writeTempFile(t, tt.lines)
+
+			set, err := fileToSet(path, cfg)
+			if err != nil {
+				t.Fatalf("fileToSet returned error: %v", err)
+			}
+
+			got := toSortedSlice(set)
+			if !reflect.DeepEqual(got, tt.expected) {
+				t.Errorf("got %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestFileToSetTrimPatterns(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		lines      []string
+		trimPrefix string
+		trimSuffix string
+		expected   []string
+	}{
+		{
+			name:       "trim-prefix",
+			lines:      []string{"prefix_alpha", "prefix_beta", "prefix_gamma"},
+			trimPrefix: "prefix_",
+			trimSuffix: "",
+			expected:   []string{"alpha", "beta", "gamma"},
+		},
+		{
+			name:       "trim-suffix",
+			lines:      []string{"alpha_suffix", "beta_suffix", "gamma_suffix"},
+			trimPrefix: "",
+			trimSuffix: "_suffix",
+			expected:   []string{"alpha", "beta", "gamma"},
+		},
+		{
+			name:       "trim-both",
+			lines:      []string{"[host1]", "[host2]", "[host3]"},
+			trimPrefix: "[",
+			trimSuffix: "]",
+			expected:   []string{"host1", "host2", "host3"},
+		},
+		{
+			name:       "no-match-prefix",
+			lines:      []string{"alpha", "beta", "prefix_gamma"},
+			trimPrefix: "prefix_",
+			trimSuffix: "",
+			expected:   []string{"alpha", "beta", "gamma"},
+		},
+		{
+			name:       "empty-after-trim",
+			lines:      []string{"prefix_", "prefix_alpha"},
+			trimPrefix: "prefix_",
+			trimSuffix: "",
+			expected:   []string{"alpha"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := testConfig(false, ",", false, false)
+			cfg.trimPrefix = tt.trimPrefix
+			cfg.trimSuffix = tt.trimSuffix
 			path := writeTempFile(t, tt.lines)
 
 			set, err := fileToSet(path, cfg)
@@ -1288,5 +1360,28 @@ func TestCLIExtractInvalidRegex(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "invalid extract regex") {
 		t.Errorf("expected 'invalid extract regex' error, got: %v", err)
+	}
+}
+
+func TestCLITrimPatterns(t *testing.T) {
+	cliMu.Lock()
+	defer cliMu.Unlock()
+
+	withCLICleanup(t)
+
+	// Create test files with prefixed data
+	fileA := writeTempFile(t, []string{"prefix_alpha", "prefix_beta", "prefix_gamma"})
+	fileB := writeTempFile(t, []string{"prefix_beta", "prefix_gamma", "prefix_delta"})
+
+	os.Args = []string{"goDiffIt", "--trim-prefix", "prefix_", "-p", fileA, fileB}
+
+	output := captureOutput(t, func() {
+		Execute()
+	})
+
+	// Should show "alpha" (only in A after trimming prefix)
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) != 1 || lines[0] != "alpha" {
+		t.Errorf("expected single line 'alpha', got: %q", output)
 	}
 }
