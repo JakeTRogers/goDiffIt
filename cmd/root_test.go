@@ -112,6 +112,18 @@ func withCLICleanup(t *testing.T) {
 	})
 }
 
+// runCLI executes the root command for testing, ignoring DiffFoundError.
+// This allows tests to verify output without os.Exit being called.
+func runCLI(t *testing.T) {
+	t.Helper()
+	err := rootCmd.Execute()
+	if err != nil {
+		if _, ok := err.(DiffFoundError); !ok {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+}
+
 // makeSet creates a hashset from the given string values.
 func makeSet(values ...string) *hashset.Set[string] {
 	hs := hashset.New[string]()
@@ -221,6 +233,30 @@ func TestFileToSet(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "file does not exist") {
 			t.Errorf("expected 'file does not exist' error, got: %v", err)
+		}
+	})
+
+	t.Run("unreadable-file", func(t *testing.T) {
+		t.Parallel()
+		cfg := testConfig(false, ",", false, false)
+
+		// Create a file with no read permissions
+		dir := t.TempDir()
+		path := filepath.Join(dir, "unreadable.txt")
+		if err := os.WriteFile(path, []byte("test"), 0o000); err != nil {
+			t.Fatalf("failed to create test file: %v", err)
+		}
+		t.Cleanup(func() {
+			// Restore permissions so cleanup can delete the file
+			_ = os.Chmod(path, 0o644)
+		})
+
+		_, err := fileToSet(path, cfg)
+		if err == nil {
+			t.Fatalf("expected error for unreadable file, got nil")
+		}
+		if !strings.Contains(err.Error(), "failed to open file") {
+			t.Errorf("expected 'failed to open file' error, got: %v", err)
 		}
 	})
 
@@ -578,6 +614,72 @@ func TestResultsSymmetricDifference(t *testing.T) {
 
 		assertStringSlice(t, toSortedSlice(r.diffAB), []string{"a", "b", "c", "d"})
 	})
+}
+
+func TestResultsHasDifferences(t *testing.T) {
+	t.Parallel()
+
+	t.Run("difference-with-results", func(t *testing.T) {
+		t.Parallel()
+		cfg := testConfig(false, ",", false, false)
+		r := makeResults([]string{"a", "b"}, []string{"b", "c"})
+		r.difference(cfg)
+
+		if !r.hasDifferences() {
+			t.Error("expected hasDifferences to return true when diffAB has elements")
+		}
+	})
+
+	t.Run("difference-no-results", func(t *testing.T) {
+		t.Parallel()
+		cfg := testConfig(false, ",", false, false)
+		r := makeResults([]string{"a", "b"}, []string{"a", "b"})
+		r.difference(cfg)
+
+		if r.hasDifferences() {
+			t.Error("expected hasDifferences to return false for identical sets")
+		}
+	})
+
+	t.Run("intersection-with-results", func(t *testing.T) {
+		t.Parallel()
+		r := makeResults([]string{"a", "b"}, []string{"b", "c"})
+		r.intersection()
+
+		if !r.hasDifferences() {
+			t.Error("expected hasDifferences to return true when diffAB has elements")
+		}
+	})
+
+	t.Run("intersection-no-results", func(t *testing.T) {
+		t.Parallel()
+		r := makeResults([]string{"a", "b"}, []string{"c", "d"})
+		r.intersection()
+
+		if r.hasDifferences() {
+			t.Error("expected hasDifferences to return false for empty intersection")
+		}
+	})
+
+	t.Run("difference-only-in-B", func(t *testing.T) {
+		t.Parallel()
+		cfg := testConfig(false, ",", false, false)
+		r := makeResults([]string{"a"}, []string{"a", "b"})
+		r.difference(cfg)
+
+		// diffAB is empty but diffBA has "b"
+		if !r.hasDifferences() {
+			t.Error("expected hasDifferences to return true when diffBA has elements")
+		}
+	})
+}
+
+func TestDiffFoundError(t *testing.T) {
+	t.Parallel()
+	err := DiffFoundError{}
+	if err.Error() != "differences found" {
+		t.Errorf("expected 'differences found', got %q", err.Error())
+	}
 }
 
 // --- printSet tests ---
@@ -1093,6 +1195,45 @@ func TestPrintSetJSONFormat(t *testing.T) {
 			t.Errorf("expected A-B and B-A keys in JSON, got: %q", output)
 		}
 	})
+
+	t.Run("union-json", func(t *testing.T) {
+		cfg := testConfig(false, ",", false, false)
+		cfg.format = "json"
+
+		r := makeResults([]string{"a", "b"}, []string{"b", "c"})
+		r.union()
+
+		output := captureOutput(t, func() {
+			if err := r.printSet(cfg); err != nil {
+				t.Fatalf("printSet returned error: %v", err)
+			}
+		})
+
+		if !strings.Contains(output, `"operation": "union"`) {
+			t.Errorf("expected operation field in JSON, got: %q", output)
+		}
+		if !strings.Contains(output, `"union"`) {
+			t.Errorf("expected union key in results, got: %q", output)
+		}
+	})
+
+	t.Run("symmetric-difference-json", func(t *testing.T) {
+		cfg := testConfig(false, ",", false, false)
+		cfg.format = "json"
+
+		r := makeResults([]string{"a", "b"}, []string{"b", "c"})
+		r.symmetricDifference()
+
+		output := captureOutput(t, func() {
+			if err := r.printSet(cfg); err != nil {
+				t.Fatalf("printSet returned error: %v", err)
+			}
+		})
+
+		if !strings.Contains(output, `"operation": "symmetric-difference"`) {
+			t.Errorf("expected operation field in JSON, got: %q", output)
+		}
+	})
 }
 
 func TestPrintSetCSVFormat(t *testing.T) {
@@ -1140,6 +1281,46 @@ func TestPrintSetCSVFormat(t *testing.T) {
 		}
 		if !strings.Contains(output, "B-A,d") {
 			t.Errorf("expected 'B-A,d' in CSV, got: %q", output)
+		}
+	})
+
+	t.Run("intersection-csv", func(t *testing.T) {
+		cfg := testConfig(false, ",", false, false)
+		cfg.format = "csv"
+
+		r := makeResults([]string{"a", "b", "c"}, []string{"b", "c", "d"})
+		r.intersection()
+
+		output := captureOutput(t, func() {
+			if err := r.printSet(cfg); err != nil {
+				t.Fatalf("printSet returned error: %v", err)
+			}
+		})
+
+		if !strings.Contains(output, "value") {
+			t.Errorf("expected CSV header 'value', got: %q", output)
+		}
+		if !strings.Contains(output, "b") || !strings.Contains(output, "c") {
+			t.Errorf("expected 'b' and 'c' in CSV, got: %q", output)
+		}
+	})
+
+	t.Run("symmetric-difference-csv", func(t *testing.T) {
+		cfg := testConfig(false, ",", false, false)
+		cfg.format = "csv"
+
+		r := makeResults([]string{"a", "b"}, []string{"b", "c"})
+		r.symmetricDifference()
+
+		output := captureOutput(t, func() {
+			if err := r.printSet(cfg); err != nil {
+				t.Fatalf("printSet returned error: %v", err)
+			}
+		})
+
+		lines := strings.Split(strings.TrimSpace(output), "\n")
+		if lines[0] != "value" {
+			t.Errorf("expected CSV header 'value', got: %q", lines[0])
 		}
 	})
 }
@@ -1248,7 +1429,7 @@ func TestCLIIntegration(t *testing.T) {
 			os.Args = append([]string{"goDiffIt"}, append(tt.args, pathA, pathB)...)
 
 			output := captureOutput(t, func() {
-				Execute()
+				runCLI(t)
 			})
 
 			for _, want := range tt.contains {
@@ -1289,7 +1470,7 @@ func TestCLIOutputFile(t *testing.T) {
 
 	// Should have no output to stdout
 	output := captureOutput(t, func() {
-		Execute()
+		runCLI(t)
 	})
 
 	if output != "" {
@@ -1321,7 +1502,7 @@ func TestCLICountMode(t *testing.T) {
 		os.Args = []string{"goDiffIt", "--count", fileA, fileB}
 
 		output := captureOutput(t, func() {
-			Execute()
+			runCLI(t)
 		})
 
 		if !strings.Contains(output, "A-B: 1") {
@@ -1344,7 +1525,7 @@ func TestCLICountMode(t *testing.T) {
 		os.Args = []string{"goDiffIt", "--union", "--count", fileA, fileB}
 
 		output := captureOutput(t, func() {
-			Execute()
+			runCLI(t)
 		})
 
 		if strings.TrimSpace(output) != "4" {
@@ -1364,7 +1545,7 @@ func TestCLICountMode(t *testing.T) {
 		os.Args = []string{"goDiffIt", "--intersection", "--count", fileA, fileB}
 
 		output := captureOutput(t, func() {
-			Execute()
+			runCLI(t)
 		})
 
 		if strings.TrimSpace(output) != "2" {
@@ -1386,7 +1567,7 @@ func TestCLIStatsMode(t *testing.T) {
 	os.Args = []string{"goDiffIt", "--stats", fileA, fileB}
 
 	output := captureOutput(t, func() {
-		Execute()
+		runCLI(t)
 	})
 
 	// Verify expected statistics
@@ -1426,7 +1607,7 @@ func TestCLIExtractMode(t *testing.T) {
 	os.Args = []string{"goDiffIt", "--extract", `id=(\d+)`, "-p", fileA, fileB}
 
 	output := captureOutput(t, func() {
-		Execute()
+		runCLI(t)
 	})
 
 	// Should show "123" (extracted from id=123, only in A)
@@ -1448,7 +1629,7 @@ func TestCLIExtractInvalidRegex(t *testing.T) {
 	// Invalid regex pattern (unclosed bracket)
 	os.Args = []string{"goDiffIt", "--extract", "[invalid", fileA, fileB}
 
-	// Capture stderr to check for error message
+	// Check for error message
 	err := rootCmd.Execute()
 	if err == nil {
 		t.Error("expected error for invalid regex, got nil")
@@ -1471,7 +1652,7 @@ func TestCLITrimPatterns(t *testing.T) {
 	os.Args = []string{"goDiffIt", "--trim-prefix", "prefix_", "-p", fileA, fileB}
 
 	output := captureOutput(t, func() {
-		Execute()
+		runCLI(t)
 	})
 
 	// Should show "alpha" (only in A after trimming prefix)
@@ -1493,7 +1674,7 @@ func TestCLIFormatJSON(t *testing.T) {
 	os.Args = []string{"goDiffIt", "--format", "json", "-i", fileA, fileB}
 
 	output := captureOutput(t, func() {
-		Execute()
+		runCLI(t)
 	})
 
 	// Verify it's valid JSON and contains expected fields
@@ -1520,7 +1701,7 @@ func TestCLIFormatCSV(t *testing.T) {
 	os.Args = []string{"goDiffIt", "--format", "csv", fileA, fileB}
 
 	output := captureOutput(t, func() {
-		Execute()
+		runCLI(t)
 	})
 
 	// Verify CSV format with header and data

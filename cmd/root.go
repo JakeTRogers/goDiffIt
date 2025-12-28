@@ -71,6 +71,19 @@ type results struct {
 	diffBA    *hashset.Set[string]
 }
 
+// Exit codes for meaningful process status.
+const (
+	exitOK    = 0 // No differences found
+	exitDiff  = 1 // Differences found
+	exitError = 2 // Error occurred
+)
+
+// DiffFoundError indicates differences were found (not a failure).
+// This allows distinguishing between errors and successful runs with differences.
+type DiffFoundError struct{}
+
+func (DiffFoundError) Error() string { return "differences found" }
+
 // fileToSet reads the file at the given path and returns a set of normalized lines.
 // Lines are trimmed, optionally lowercased, split by delimiter, and optionally
 // have FQDN suffixes stripped based on the provided config.
@@ -198,6 +211,18 @@ func (r *results) symmetricDifference() {
 			r.diffAB.Add(element)
 		}
 	}
+}
+
+// hasDifferences returns true if the result sets contain any elements.
+// For difference operations, checks both A-B and B-A sets.
+func (r *results) hasDifferences() bool {
+	if r.diffAB.Size() > 0 {
+		return true
+	}
+	if r.operation == "difference" && r.diffBA.Size() > 0 {
+		return true
+	}
+	return false
 }
 
 // toSortedSlice converts a hashset to a sorted string slice.
@@ -440,6 +465,10 @@ comma by default, but any character can be specified via the --delimiter flag.`,
 		verboseCount, _ := cmd.Flags().GetCount("verbose")
 		logger.SetLogLevel(verboseCount)
 	},
+	// SilenceErrors prevents Cobra from printing DiffFoundError
+	SilenceErrors: true,
+	// SilenceUsage prevents usage output on DiffFoundError
+	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg := &config{
 			caseSensitive: caseSensitive,
@@ -506,15 +535,31 @@ comma by default, but any character can be specified via the --delimiter flag.`,
 
 		log.Debug().Str("operation", rs.operation).Msg("completed")
 
-		return rs.printSet(cfg)
+		if err := rs.printSet(cfg); err != nil {
+			return err
+		}
+
+		// Return DiffFoundError if there are differences
+		if rs.hasDifferences() {
+			return DiffFoundError{}
+		}
+		return nil
 	},
 }
 
-// Execute runs the root command and exits with code 1 on error.
+// Execute runs the root command and exits with appropriate code.
+// Exit codes: 0 = no differences, 1 = differences found, 2 = error.
 func Execute() {
-	if err := rootCmd.Execute(); err != nil {
-		os.Exit(1)
+	err := rootCmd.Execute()
+	if err == nil {
+		os.Exit(exitOK)
 	}
+	if _, ok := err.(DiffFoundError); ok {
+		os.Exit(exitDiff)
+	}
+	// Print actual errors (SilenceErrors is true, so we do it manually)
+	fmt.Fprintln(os.Stderr, "Error:", err)
+	os.Exit(exitError)
 }
 
 func init() {
