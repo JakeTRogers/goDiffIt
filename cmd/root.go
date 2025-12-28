@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -21,6 +22,7 @@ import (
 var (
 	caseSensitive bool
 	delimiter     string
+	extract       string
 	ignoreFQDN    bool
 	pipe          bool
 	output        string
@@ -36,6 +38,7 @@ var log = logger.GetLogger()
 type config struct {
 	caseSensitive bool
 	delimiter     string
+	extract       *regexp.Regexp
 	ignoreFQDN    bool
 	pipe          bool
 	output        string
@@ -95,13 +98,28 @@ func fileToSet(path string, cfg *config) (*hashset.Set[string], error) {
 		if !cfg.caseSensitive {
 			line = strings.ToLower(line)
 		}
-		if strings.Contains(line, cfg.delimiter) {
+		// Extract using regex if provided (takes precedence over delimiter)
+		if cfg.extract != nil {
+			matches := cfg.extract.FindStringSubmatch(line)
+			if len(matches) > 1 {
+				// Use first capture group
+				line = strings.TrimSpace(matches[1])
+			} else if len(matches) == 1 {
+				// No capture group, use full match
+				line = strings.TrimSpace(matches[0])
+			} else {
+				// No match, skip this line
+				continue
+			}
+		} else if strings.Contains(line, cfg.delimiter) {
 			line = strings.TrimSpace(strings.Split(line, cfg.delimiter)[0])
 		}
 		if cfg.ignoreFQDN {
 			line = strings.TrimSpace(strings.Split(line, ".")[0])
 		}
-		set.Add(line)
+		if line != "" {
+			set.Add(line)
+		}
 	}
 	if err := reader.Err(); err != nil {
 		return nil, fmt.Errorf("failed to scan input: %w", err)
@@ -328,7 +346,18 @@ comma by default, but any character can be specified via the --delimiter flag.`,
 			ignoreFQDN:    ignoreFQDN,
 			pipe:          pipe,
 			output:        output,
-			count:         count, stats: stats}
+			count:         count,
+			stats:         stats,
+		}
+
+		// Compile extract regex if provided
+		if extract != "" {
+			re, err := regexp.Compile(extract)
+			if err != nil {
+				return fmt.Errorf("invalid extract regex: %w", err)
+			}
+			cfg.extract = re
+		}
 
 		// Log flag values at debug level
 		log.Debug().
@@ -388,6 +417,7 @@ func init() {
 	rootCmd.Flags().BoolVarP(&caseSensitive, "case-sensitive", "c", false, "preserve case during comparison (default: case-insensitive)")
 	rootCmd.Flags().BoolVar(&count, "count", false, "output only the count of results instead of the elements")
 	rootCmd.Flags().StringVarP(&delimiter, "delimiter", "d", ",", "delimiter for splitting lines (default: comma)")
+	rootCmd.Flags().StringVarP(&extract, "extract", "e", "", "extract values using regex pattern (use capture group for substring)")
 	rootCmd.Flags().BoolVarP(&ignoreFQDN, "ignore-fqdn", "f", false, "strip FQDN suffixes (keep only hostname before first dot)")
 	rootCmd.Flags().StringVarP(&output, "output", "o", "", "write output to file instead of stdout")
 	rootCmd.Flags().BoolVarP(&pipe, "pipe", "p", false, "suppress headers for piped output")

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -37,6 +38,7 @@ func testConfig(caseSens bool, delim string, ignoreFQDN, pipeMode bool) *config 
 		output:        "",
 		count:         false,
 		stats:         false,
+		extract:       nil,
 	}
 }
 
@@ -81,6 +83,7 @@ func resetRootCmd() {
 	rootCmd.Flags().BoolVarP(&caseSensitive, "case-sensitive", "c", false, "preserve case during comparison")
 	rootCmd.Flags().BoolVar(&count, "count", false, "output only the count of results instead of the elements")
 	rootCmd.Flags().StringVarP(&delimiter, "delimiter", "d", ",", "delimiter for splitting lines")
+	rootCmd.Flags().StringVarP(&extract, "extract", "e", "", "extract values using regex pattern")
 	rootCmd.Flags().BoolVarP(&ignoreFQDN, "ignore-fqdn", "f", false, "strip FQDN suffixes")
 	rootCmd.Flags().StringVarP(&output, "output", "o", "", "write output to file instead of stdout")
 	rootCmd.Flags().BoolVarP(&pipe, "pipe", "p", false, "suppress headers for piped output")
@@ -344,6 +347,67 @@ func TestFileToSetDelimiters(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := testConfig(tt.caseSens, tt.delimiter, tt.ignoreFQDN, false)
+			path := writeTempFile(t, tt.lines)
+
+			set, err := fileToSet(path, cfg)
+			if err != nil {
+				t.Fatalf("fileToSet returned error: %v", err)
+			}
+
+			got := toSortedSlice(set)
+			if !reflect.DeepEqual(got, tt.expected) {
+				t.Errorf("got %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestFileToSetExtract(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		lines    []string
+		pattern  string
+		expected []string
+	}{
+		{
+			name:     "simple-match",
+			lines:    []string{"host1", "host2", "host3"},
+			pattern:  `host\d`,
+			expected: []string{"host1", "host2", "host3"},
+		},
+		{
+			name:     "capture-group",
+			lines:    []string{"id=123", "id=456", "id=789"},
+			pattern:  `id=(\d+)`,
+			expected: []string{"123", "456", "789"},
+		},
+		{
+			name:     "extract-hostname-from-url",
+			lines:    []string{"https://foo.example.com/path", "https://bar.example.com/api"},
+			pattern:  `https://([^/]+)`,
+			expected: []string{"bar.example.com", "foo.example.com"},
+		},
+		{
+			name:     "skip-non-matching",
+			lines:    []string{"match123", "nomatch", "match456"},
+			pattern:  `match(\d+)`,
+			expected: []string{"123", "456"},
+		},
+		{
+			name:     "full-match-no-capture",
+			lines:    []string{"error: something failed", "error: another issue"},
+			pattern:  `error: .*`,
+			expected: []string{"error: another issue", "error: something failed"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := testConfig(false, ",", false, false)
+			cfg.extract = regexp.MustCompile(tt.pattern)
 			path := writeTempFile(t, tt.lines)
 
 			set, err := fileToSet(path, cfg)
@@ -1179,5 +1243,50 @@ func TestCLIStatsMode(t *testing.T) {
 	}
 	if !strings.Contains(output, "Only in B: 1") {
 		t.Errorf("expected 'Only in B: 1', got: %q", output)
+	}
+}
+
+func TestCLIExtractMode(t *testing.T) {
+	cliMu.Lock()
+	defer cliMu.Unlock()
+
+	withCLICleanup(t)
+
+	// Create test files with extractable data
+	fileA := writeTempFile(t, []string{"id=123", "id=456", "id=789"})
+	fileB := writeTempFile(t, []string{"id=456", "id=789", "id=999"})
+
+	os.Args = []string{"goDiffIt", "--extract", `id=(\d+)`, "-p", fileA, fileB}
+
+	output := captureOutput(t, func() {
+		Execute()
+	})
+
+	// Should show "123" (extracted from id=123, only in A)
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) != 1 || lines[0] != "123" {
+		t.Errorf("expected single line '123', got: %q", output)
+	}
+}
+
+func TestCLIExtractInvalidRegex(t *testing.T) {
+	cliMu.Lock()
+	defer cliMu.Unlock()
+
+	withCLICleanup(t)
+
+	fileA := writeTempFile(t, []string{"test"})
+	fileB := writeTempFile(t, []string{"test"})
+
+	// Invalid regex pattern (unclosed bracket)
+	os.Args = []string{"goDiffIt", "--extract", "[invalid", fileA, fileB}
+
+	// Capture stderr to check for error message
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Error("expected error for invalid regex, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid extract regex") {
+		t.Errorf("expected 'invalid extract regex' error, got: %v", err)
 	}
 }
