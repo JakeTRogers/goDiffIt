@@ -1,3 +1,26 @@
+## v2.0.0 (2025-12-28)
+
+### Feat
+
+- implement exit codes and DiffFoundError for better process status handling
+- add JSON and CSV output formats for result sets with corresponding tests
+- add trim prefix and suffix options for line processing and corresponding tests
+- add regex extraction option for file parsing and corresponding tests
+- enhance fileToSet to support reading from stdin and add corresponding tests
+- add stats mode to display detailed statistics about file sets
+- add count mode to output only the counts of results
+- add output option to print results to a file or stdout
+- add symmetric difference operation and corresponding tests
+
+### Fix
+
+- **deps**: bump github.com/spf13/cobra from 1.10.1 to 1.10.2
+
+### Refactor
+
+- replace sort with slices for improved performance; use hashset boolean diff functions
+- large refactor of goDiffIt CLI and update dependencies to follow go.instructions.md
+
 ## v1.0.6 (2025-10-05)
 
 ### Fix
