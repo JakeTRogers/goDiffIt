@@ -2,74 +2,72 @@
 
 ## Project Overview
 
-goDiffIt is a Go 1.25 CLI tool that compares two files using set operations (difference, intersection, union). Unlike `diff`, it treats files as sets of lines—order and duplicates don't matter.
+goDiffIt is a Go 1.25 CLI tool that compares two files using set operations (difference, intersection, union, symmetric-difference). Unlike `diff`, it treats files as sets of lines—order and duplicates don't matter.
 
 ## Architecture
 
-```
+```text
 main.go          → Entry point, calls cmd.Execute()
 cmd/root.go      → All CLI logic: Cobra command, flags, set operations
 logger/logger.go → Zerolog wrapper with verbosity levels (-v to -vvvv)
 ```
 
 **Key types in `cmd/root.go`:**
+
+- `config` – runtime configuration populated from CLI flags, passed explicitly to functions
 - `fileSet` – wraps a file path and its parsed `hashset.Set`
-- `results` – holds both file sets, operation name, and result sets (setAB, setBA)
+- `results` – holds both file sets, operation name, and computed result sets (diffAB, diffBA)
 
 **Data flow:** File → `fileToSet()` (normalize lines) → set operation → `printSet()` output
+
+**Exit codes:** `0` = no differences, `1` = differences found (`DiffFoundError`), `2` = error occurred
 
 ## Code Patterns
 
 **Error handling:** Wrap errors with context using `fmt.Errorf("description: %w", err)`
 
-**Logging:** Use the package-level logger `l` from `logger.GetLogger()`:
+**Logging:** Use the package-level logger `log` from `logger.GetLogger()`:
+
 ```go
-l.Debug().Str("key", value).Send()
-l.Fatal().Err(err).Send()  // For unrecoverable errors
+log.Debug().Str("key", value).Msg("description")
+log.Err(err).Msg("failed to close file")  // For recoverable errors
 ```
 
 **Adding CLI flags:** Define in `init()`, use `rootCmd.Flags()` for command-specific or `PersistentFlags()` for global. Mutually exclusive flags use `MarkFlagsMutuallyExclusive()`.
 
+**Output formats:** Support text (default), JSON, and CSV via `--format` flag. Use `printJSON()`, `printCSV()`, or text output in `printSet()`.
+
 ## Development Commands
 
 ```bash
-# Run tests
-go test ./... -v
-
-# Coverage report (cmd package must maintain ≥85%)
-go test ./... -cover
-
-# Build
-go build -o godiffit .
+go test ./... -v           # Run tests
+go test ./... -cover       # Coverage (must maintain ≥80%)
+go build -o godiffit .     # Build binary
 ```
 
 ## Testing Patterns
 
-Tests live in `cmd/root_test.go`. Follow these patterns:
+Tests live in `cmd/root_test.go`. Use these helpers:
 
-- **Temp files:** Use `writeTempFile(t, lines)` helper to create test input
-- **Flag isolation:** Use `withFlags(t, caseSensitive, delimiter, ignoreFQDN)` to set flags with automatic cleanup
-- **Output capture:** Use `captureOutput(t, fn)` to capture stdout
-- **CLI cleanup:** Use `withCLICleanup(t)` when testing full command execution to reset `os.Args` and flags
+- `writeTempFile(t, lines)` – creates temp file with test data
+- `testConfig(caseSens, delim, ignoreFQDN, pipeMode)` – creates config struct for unit tests
+- `captureOutput(t, fn)` – captures stdout during function execution
+- `withCLICleanup(t)` – resets `os.Args` and Cobra flags for CLI integration tests
+- `makeSet(values...)` – creates hashset from string values
+- `makeResultsWithOp(setA, setB, op, pipeMode)` – creates results struct with operation applied
 
 Example test structure:
+
 ```go
 func TestFeature(t *testing.T) {
-    withFlags(t, false, ",", true)
+    t.Parallel()
+    cfg := testConfig(false, ",", true, false)
     path := writeTempFile(t, []string{"line1", "line2"})
-    // ... test logic
+    set, err := fileToSet(path, cfg)
+    // assertions...
 }
 ```
 
 ## Commit Convention
 
-Uses [Conventional Commits](https://www.conventionalcommits.org/)
-
-## Pre-commit Hooks
-
-Hooks run automatically on commit. Install with:
-```bash
-pre-commit install --hook-type pre-commit --hook-type commit-msg
-```
-
-Checks: go test, coverage ≥85%, golangci-lint, commitizen message format.
+Uses [Conventional Commits](https://www.conventionalcommits.org/) (enforced by pre-commit hooks).
