@@ -33,6 +33,7 @@ func testConfig(caseSens bool, delim string, ignoreFQDN, pipeMode bool) *config 
 	return &config{
 		caseSensitive: caseSens,
 		delimiter:     delim,
+		format:        "text",
 		ignoreFQDN:    ignoreFQDN,
 		pipe:          pipeMode,
 		output:        "",
@@ -86,6 +87,7 @@ func resetRootCmd() {
 	rootCmd.Flags().BoolVar(&count, "count", false, "output only the count of results instead of the elements")
 	rootCmd.Flags().StringVarP(&delimiter, "delimiter", "d", ",", "delimiter for splitting lines")
 	rootCmd.Flags().StringVarP(&extract, "extract", "e", "", "extract values using regex pattern")
+	rootCmd.Flags().StringVar(&format, "format", "text", "output format: text, json, or csv")
 	rootCmd.Flags().BoolVarP(&ignoreFQDN, "ignore-fqdn", "f", false, "strip FQDN suffixes")
 	rootCmd.Flags().StringVarP(&output, "output", "o", "", "write output to file instead of stdout")
 	rootCmd.Flags().BoolVarP(&pipe, "pipe", "p", false, "suppress headers for piped output")
@@ -1049,6 +1051,99 @@ func TestPrintSetStatsMode(t *testing.T) {
 	})
 }
 
+func TestPrintSetJSONFormat(t *testing.T) {
+	t.Run("intersection-json", func(t *testing.T) {
+		cfg := testConfig(false, ",", false, false)
+		cfg.format = "json"
+
+		r := makeResults([]string{"a", "b", "c"}, []string{"b", "c", "d"})
+		r.intersection()
+
+		output := captureOutput(t, func() {
+			if err := r.printSet(cfg); err != nil {
+				t.Fatalf("printSet returned error: %v", err)
+			}
+		})
+
+		if !strings.Contains(output, `"operation": "intersection"`) {
+			t.Errorf("expected operation field in JSON, got: %q", output)
+		}
+		if !strings.Contains(output, `"b"`) || !strings.Contains(output, `"c"`) {
+			t.Errorf("expected b and c in results, got: %q", output)
+		}
+	})
+
+	t.Run("difference-json", func(t *testing.T) {
+		cfg := testConfig(false, ",", false, false)
+		cfg.format = "json"
+
+		r := makeResults([]string{"a", "b", "c"}, []string{"b", "c", "d"})
+		r.difference(cfg)
+
+		output := captureOutput(t, func() {
+			if err := r.printSet(cfg); err != nil {
+				t.Fatalf("printSet returned error: %v", err)
+			}
+		})
+
+		if !strings.Contains(output, `"operation": "difference"`) {
+			t.Errorf("expected operation field in JSON, got: %q", output)
+		}
+		if !strings.Contains(output, `"A-B"`) || !strings.Contains(output, `"B-A"`) {
+			t.Errorf("expected A-B and B-A keys in JSON, got: %q", output)
+		}
+	})
+}
+
+func TestPrintSetCSVFormat(t *testing.T) {
+	t.Run("union-csv", func(t *testing.T) {
+		cfg := testConfig(false, ",", false, false)
+		cfg.format = "csv"
+
+		r := makeResults([]string{"a", "b"}, []string{"b", "c"})
+		r.union()
+
+		output := captureOutput(t, func() {
+			if err := r.printSet(cfg); err != nil {
+				t.Fatalf("printSet returned error: %v", err)
+			}
+		})
+
+		lines := strings.Split(strings.TrimSpace(output), "\n")
+		if lines[0] != "value" {
+			t.Errorf("expected CSV header 'value', got: %q", lines[0])
+		}
+		// Should have a, b, c
+		if len(lines) != 4 {
+			t.Errorf("expected 4 lines (header + 3 values), got %d", len(lines))
+		}
+	})
+
+	t.Run("difference-csv", func(t *testing.T) {
+		cfg := testConfig(false, ",", false, false)
+		cfg.format = "csv"
+
+		r := makeResults([]string{"a", "b", "c"}, []string{"b", "c", "d"})
+		r.difference(cfg)
+
+		output := captureOutput(t, func() {
+			if err := r.printSet(cfg); err != nil {
+				t.Fatalf("printSet returned error: %v", err)
+			}
+		})
+
+		if !strings.Contains(output, "set,value") {
+			t.Errorf("expected CSV header 'set,value', got: %q", output)
+		}
+		if !strings.Contains(output, "A-B,a") {
+			t.Errorf("expected 'A-B,a' in CSV, got: %q", output)
+		}
+		if !strings.Contains(output, "B-A,d") {
+			t.Errorf("expected 'B-A,d' in CSV, got: %q", output)
+		}
+	})
+}
+
 // --- toSortedSlice tests ---
 
 func TestToSortedSlice(t *testing.T) {
@@ -1383,5 +1478,65 @@ func TestCLITrimPatterns(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(output), "\n")
 	if len(lines) != 1 || lines[0] != "alpha" {
 		t.Errorf("expected single line 'alpha', got: %q", output)
+	}
+}
+
+func TestCLIFormatJSON(t *testing.T) {
+	cliMu.Lock()
+	defer cliMu.Unlock()
+
+	withCLICleanup(t)
+
+	fileA := writeTempFile(t, []string{"alpha", "beta", "gamma"})
+	fileB := writeTempFile(t, []string{"beta", "gamma", "delta"})
+
+	os.Args = []string{"goDiffIt", "--format", "json", "-i", fileA, fileB}
+
+	output := captureOutput(t, func() {
+		Execute()
+	})
+
+	// Verify it's valid JSON and contains expected fields
+	if !strings.Contains(output, `"operation": "intersection"`) {
+		t.Errorf("expected JSON with operation field, got: %q", output)
+	}
+	if !strings.Contains(output, `"beta"`) {
+		t.Errorf("expected JSON with 'beta' in results, got: %q", output)
+	}
+	if !strings.Contains(output, `"gamma"`) {
+		t.Errorf("expected JSON with 'gamma' in results, got: %q", output)
+	}
+}
+
+func TestCLIFormatCSV(t *testing.T) {
+	cliMu.Lock()
+	defer cliMu.Unlock()
+
+	withCLICleanup(t)
+
+	fileA := writeTempFile(t, []string{"alpha", "beta", "gamma"})
+	fileB := writeTempFile(t, []string{"beta", "gamma", "delta"})
+
+	os.Args = []string{"goDiffIt", "--format", "csv", fileA, fileB}
+
+	output := captureOutput(t, func() {
+		Execute()
+	})
+
+	// Verify CSV format with header and data
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected at least 2 lines (header + data), got %d", len(lines))
+	}
+	if lines[0] != "set,value" {
+		t.Errorf("expected CSV header 'set,value', got: %q", lines[0])
+	}
+	// Should have A-B entry for "alpha"
+	if !strings.Contains(output, "A-B,alpha") {
+		t.Errorf("expected 'A-B,alpha' in CSV output, got: %q", output)
+	}
+	// Should have B-A entry for "delta"
+	if !strings.Contains(output, "B-A,delta") {
+		t.Errorf("expected 'B-A,delta' in CSV output, got: %q", output)
 	}
 }

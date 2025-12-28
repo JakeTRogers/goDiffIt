@@ -6,6 +6,8 @@ package cmd
 
 import (
 	"bufio"
+	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
@@ -23,6 +25,7 @@ var (
 	caseSensitive bool
 	delimiter     string
 	extract       string
+	format        string
 	ignoreFQDN    bool
 	pipe          bool
 	output        string
@@ -41,6 +44,7 @@ type config struct {
 	caseSensitive bool
 	delimiter     string
 	extract       *regexp.Regexp
+	format        string
 	ignoreFQDN    bool
 	pipe          bool
 	output        string
@@ -203,11 +207,88 @@ func toSortedSlice(hs *hashset.Set[string]) []string {
 	return values
 }
 
+// jsonOutput represents the JSON structure for output.
+type jsonOutput struct {
+	Operation string              `json:"operation"`
+	FileA     string              `json:"fileA"`
+	FileB     string              `json:"fileB"`
+	Results   map[string][]string `json:"results"`
+	Counts    map[string]int      `json:"counts"`
+}
+
+// printJSON outputs the results in JSON format.
+func (r *results) printJSON(output *os.File) error {
+	jo := jsonOutput{
+		Operation: r.operation,
+		FileA:     r.fileSetA.path,
+		FileB:     r.fileSetB.path,
+		Results:   make(map[string][]string),
+		Counts:    make(map[string]int),
+	}
+
+	if r.operation == "difference" {
+		jo.Results["A-B"] = toSortedSlice(r.diffAB)
+		jo.Results["B-A"] = toSortedSlice(r.diffBA)
+		jo.Counts["A-B"] = r.diffAB.Size()
+		jo.Counts["B-A"] = r.diffBA.Size()
+	} else {
+		jo.Results[r.operation] = toSortedSlice(r.diffAB)
+		jo.Counts[r.operation] = r.diffAB.Size()
+	}
+
+	encoder := json.NewEncoder(output)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(jo); err != nil {
+		return fmt.Errorf("failed to encode JSON: %w", err)
+	}
+	return nil
+}
+
+// printCSV outputs the results in CSV format.
+// For difference operations, includes a "set" column indicating A-B or B-A.
+func (r *results) printCSV(output *os.File) error {
+	writer := csv.NewWriter(output)
+	defer writer.Flush()
+
+	if r.operation == "difference" {
+		// Write header
+		if err := writer.Write([]string{"set", "value"}); err != nil {
+			return fmt.Errorf("failed to write CSV header: %w", err)
+		}
+		// Write A-B values
+		for _, v := range toSortedSlice(r.diffAB) {
+			if err := writer.Write([]string{"A-B", v}); err != nil {
+				return fmt.Errorf("failed to write CSV row: %w", err)
+			}
+		}
+		// Write B-A values
+		for _, v := range toSortedSlice(r.diffBA) {
+			if err := writer.Write([]string{"B-A", v}); err != nil {
+				return fmt.Errorf("failed to write CSV row: %w", err)
+			}
+		}
+	} else {
+		// Write header
+		if err := writer.Write([]string{"value"}); err != nil {
+			return fmt.Errorf("failed to write CSV header: %w", err)
+		}
+		// Write values
+		for _, v := range toSortedSlice(r.diffAB) {
+			if err := writer.Write([]string{v}); err != nil {
+				return fmt.Errorf("failed to write CSV row: %w", err)
+			}
+		}
+	}
+
+	return nil
+}
+
 // printSet outputs the result sets to stdout or a file.
 // When cfg.count is true, it prints only the counts instead of the elements.
 // When cfg.pipe is true, it suppresses headers for easier command-line piping.
 // For difference operations without pipe mode, it prints both A-B and B-A results.
 // If cfg.output is set, results are written to the specified file.
+// cfg.format controls output format: "text" (default), "json", or "csv".
 func (r *results) printSet(cfg *config) error {
 	var output *os.File
 	var err error
@@ -224,6 +305,16 @@ func (r *results) printSet(cfg *config) error {
 		}()
 	} else {
 		output = os.Stdout
+	}
+
+	// JSON format output
+	if cfg.format == "json" {
+		return r.printJSON(output)
+	}
+
+	// CSV format output
+	if cfg.format == "csv" {
+		return r.printCSV(output)
 	}
 
 	// Count mode: only output counts
@@ -353,6 +444,7 @@ comma by default, but any character can be specified via the --delimiter flag.`,
 		cfg := &config{
 			caseSensitive: caseSensitive,
 			delimiter:     delimiter,
+			format:        format,
 			ignoreFQDN:    ignoreFQDN,
 			pipe:          pipe,
 			output:        output,
@@ -430,6 +522,7 @@ func init() {
 	rootCmd.Flags().BoolVar(&count, "count", false, "output only the count of results instead of the elements")
 	rootCmd.Flags().StringVarP(&delimiter, "delimiter", "d", ",", "delimiter for splitting lines (default: comma)")
 	rootCmd.Flags().StringVarP(&extract, "extract", "e", "", "extract values using regex pattern (use capture group for substring)")
+	rootCmd.Flags().StringVar(&format, "format", "text", "output format: text, json, or csv")
 	rootCmd.Flags().BoolVarP(&ignoreFQDN, "ignore-fqdn", "f", false, "strip FQDN suffixes (keep only hostname before first dot)")
 	rootCmd.Flags().StringVarP(&output, "output", "o", "", "write output to file instead of stdout")
 	rootCmd.Flags().BoolVarP(&pipe, "pipe", "p", false, "suppress headers for piped output")
@@ -440,5 +533,7 @@ func init() {
 	rootCmd.Flags().BoolP("union", "u", false, "show the union of the two files")
 	rootCmd.Flags().BoolP("symmetric-difference", "s", false, "show the symmetric difference (XOR) of the two files")
 	rootCmd.MarkFlagsMutuallyExclusive("intersection", "union", "symmetric-difference")
+	rootCmd.MarkFlagsMutuallyExclusive("format", "count")
+	rootCmd.MarkFlagsMutuallyExclusive("format", "stats")
 	rootCmd.PersistentFlags().CountP("verbose", "v", "increase verbosity (-v=warn, -vv=info, -vvv=debug, -vvvv=trace)")
 }
