@@ -19,24 +19,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Package-level flag variables bound to Cobra flags.
-// These are copied into a config struct at runtime for testability.
-var (
-	caseSensitive bool
-	delimiter     string
-	extract       string
-	format        string
-	ignoreFQDN    bool
-	pipe          bool
-	output        string
-	count         bool
-	stats         bool
-	trimPrefix    string
-	trimSuffix    string
-)
-
 // log is the package-level logger instance.
 var log = logger.GetLogger()
+
+// rootCmd is the main Cobra command, initialized in init() for production use.
+// Tests should use newRootCmd() for isolation.
+var rootCmd *cobra.Command
 
 // config holds runtime configuration for file processing.
 // It is populated from CLI flags and passed explicitly to functions.
@@ -368,11 +356,30 @@ func (r *results) printSet(cfg *config) error {
 	return nil
 }
 
-var rootCmd = &cobra.Command{
-	Use:     "goDiffIt [fileA] [fileB]",
-	Version: "v2.0.0",
-	Short:   "goDiffIt is a CLI tool for comparing files/lists.",
-	Long: `goDiffIt is a CLI tool for comparing files/lists and explaining their differences. It can perform set operations such as
+// newRootCmd creates and returns a new root command with all flags configured.
+// This factory function allows tests to create isolated command instances,
+// avoiding global state issues with flag binding.
+func newRootCmd() *cobra.Command {
+	// Flag variables scoped to this command instance
+	var (
+		caseSensitive bool
+		delimiter     string
+		extract       string
+		format        string
+		ignoreFQDN    bool
+		pipe          bool
+		output        string
+		count         bool
+		stats         bool
+		trimPrefix    string
+		trimSuffix    string
+	)
+
+	cmd := &cobra.Command{
+		Use:     "goDiffIt [fileA] [fileB]",
+		Version: "v2.0.0",
+		Short:   "goDiffIt is a CLI tool for comparing files/lists.",
+		Long: `goDiffIt is a CLI tool for comparing files/lists and explaining their differences. It can perform set operations such as
 union, intersection, and difference. This is very helpful for comparing data from different sources, and spotting gaps.
 
 It is case insensitive by default, but can be configured to be case sensitive with the --case-sensitive flag. It can
@@ -381,103 +388,131 @@ and another is not.
 
 It can also be used to compare first column CSV files, or a CSV file and a text file. The delimiter for CSV files is
 comma by default, but any character can be specified via the --delimiter flag.`,
-	Args: func(cmd *cobra.Command, args []string) error {
-		if len(args) < 2 {
-			return fmt.Errorf("requires at least two args: fileA and fileB")
-		}
-		return nil
-	},
-	PersistentPreRun: func(cmd *cobra.Command, args []string) {
-		verboseCount, _ := cmd.Flags().GetCount("verbose")
-		logger.SetLogLevel(verboseCount)
-	},
-	// SilenceErrors prevents Cobra from printing DiffFoundError
-	SilenceErrors: true,
-	// SilenceUsage prevents usage output on DiffFoundError
-	SilenceUsage: true,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg := &config{
-			caseSensitive: caseSensitive,
-			delimiter:     delimiter,
-			format:        format,
-			ignoreFQDN:    ignoreFQDN,
-			pipe:          pipe,
-			output:        output,
-			count:         count,
-			stats:         stats,
-			trimPrefix:    trimPrefix,
-			trimSuffix:    trimSuffix,
-		}
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) < 2 {
+				return fmt.Errorf("requires at least two args: fileA and fileB")
+			}
+			return nil
+		},
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			verboseCount, _ := cmd.Flags().GetCount("verbose")
+			logger.SetLogLevel(verboseCount)
+		},
+		// SilenceErrors prevents Cobra from printing DiffFoundError
+		SilenceErrors: true,
+		// SilenceUsage prevents usage output on DiffFoundError
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := &config{
+				caseSensitive: caseSensitive,
+				delimiter:     delimiter,
+				format:        format,
+				ignoreFQDN:    ignoreFQDN,
+				pipe:          pipe,
+				output:        output,
+				count:         count,
+				stats:         stats,
+				trimPrefix:    trimPrefix,
+				trimSuffix:    trimSuffix,
+			}
 
-		// Compile extract regex if provided
-		if extract != "" {
-			re, err := regexp.Compile(extract)
+			// Compile extract regex if provided
+			if extract != "" {
+				re, err := regexp.Compile(extract)
+				if err != nil {
+					return fmt.Errorf("invalid extract regex: %w", err)
+				}
+				cfg.extract = re
+			}
+
+			// Log flag values at debug level
+			log.Debug().
+				Bool("case-sensitive", cfg.caseSensitive).
+				Str("delimiter", cfg.delimiter).
+				Bool("ignore-fqdn", cfg.ignoreFQDN).
+				Bool("pipe", cfg.pipe).
+				Msg("flags")
+
+			setA, err := fileToSet(args[0], cfg)
 			if err != nil {
-				return fmt.Errorf("invalid extract regex: %w", err)
+				return fmt.Errorf("file A: %w", err)
 			}
-			cfg.extract = re
-		}
-
-		// Log flag values at debug level
-		log.Debug().
-			Bool("case-sensitive", cfg.caseSensitive).
-			Str("delimiter", cfg.delimiter).
-			Bool("ignore-fqdn", cfg.ignoreFQDN).
-			Bool("pipe", cfg.pipe).
-			Msg("flags")
-
-		setA, err := fileToSet(args[0], cfg)
-		if err != nil {
-			return fmt.Errorf("file A: %w", err)
-		}
-		setB, err := fileToSet(args[1], cfg)
-		if err != nil {
-			return fmt.Errorf("file B: %w", err)
-		}
-
-		rs := results{
-			fileSetA: fileSet{path: args[0], set: setA},
-			fileSetB: fileSet{path: args[1], set: setB},
-			diffAB:   hashset.New[string](),
-			diffBA:   hashset.New[string](),
-		}
-
-		log.Debug().Str("fileA", rs.fileSetA.path).Str("fileB", rs.fileSetB.path).Msg("processing")
-
-		intersectionFlag, _ := cmd.Flags().GetBool("intersection")
-		unionFlag, _ := cmd.Flags().GetBool("union")
-		symmetricDiffFlag, _ := cmd.Flags().GetBool("symmetric-difference")
-
-		switch {
-		case intersectionFlag:
-			rs.operation = "intersection"
-			rs.diffAB = rs.fileSetA.set.Intersection(rs.fileSetB.set)
-		case unionFlag:
-			rs.operation = "union"
-			rs.diffAB = rs.fileSetA.set.Union(rs.fileSetB.set)
-		case symmetricDiffFlag:
-			rs.operation = "symmetric-difference"
-			rs.diffAB = rs.fileSetA.set.Difference(rs.fileSetB.set).Union(rs.fileSetB.set.Difference(rs.fileSetA.set))
-		default:
-			rs.operation = "difference"
-			rs.diffAB = rs.fileSetA.set.Difference(rs.fileSetB.set)
-			if !cfg.pipe {
-				rs.diffBA = rs.fileSetB.set.Difference(rs.fileSetA.set)
+			setB, err := fileToSet(args[1], cfg)
+			if err != nil {
+				return fmt.Errorf("file B: %w", err)
 			}
-		}
 
-		log.Debug().Str("operation", rs.operation).Msg("completed")
+			rs := results{
+				fileSetA: fileSet{path: args[0], set: setA},
+				fileSetB: fileSet{path: args[1], set: setB},
+				diffAB:   hashset.New[string](),
+				diffBA:   hashset.New[string](),
+			}
 
-		if err := rs.printSet(cfg); err != nil {
-			return err
-		}
+			log.Debug().Str("fileA", rs.fileSetA.path).Str("fileB", rs.fileSetB.path).Msg("processing")
 
-		// Return DiffFoundError if there are differences
-		if rs.hasDifferences() {
-			return DiffFoundError{}
-		}
-		return nil
-	},
+			intersectionFlag, _ := cmd.Flags().GetBool("intersection")
+			unionFlag, _ := cmd.Flags().GetBool("union")
+			symmetricDiffFlag, _ := cmd.Flags().GetBool("symmetric-difference")
+
+			switch {
+			case intersectionFlag:
+				rs.operation = "intersection"
+				rs.diffAB = rs.fileSetA.set.Intersection(rs.fileSetB.set)
+			case unionFlag:
+				rs.operation = "union"
+				rs.diffAB = rs.fileSetA.set.Union(rs.fileSetB.set)
+			case symmetricDiffFlag:
+				rs.operation = "symmetric-difference"
+				rs.diffAB = rs.fileSetA.set.Difference(rs.fileSetB.set).Union(rs.fileSetB.set.Difference(rs.fileSetA.set))
+			default:
+				rs.operation = "difference"
+				rs.diffAB = rs.fileSetA.set.Difference(rs.fileSetB.set)
+				if !cfg.pipe {
+					rs.diffBA = rs.fileSetB.set.Difference(rs.fileSetA.set)
+				}
+			}
+
+			log.Debug().Str("operation", rs.operation).Msg("completed")
+
+			if err := rs.printSet(cfg); err != nil {
+				return err
+			}
+
+			// Return DiffFoundError if there are differences
+			if rs.hasDifferences() {
+				return DiffFoundError{}
+			}
+			return nil
+		},
+	}
+
+	// Register flags on this command instance
+	cmd.Flags().BoolVarP(&caseSensitive, "case-sensitive", "c", false, "preserve case during comparison (default: case-insensitive)")
+	cmd.Flags().BoolVar(&count, "count", false, "output only the count of results instead of the elements")
+	cmd.Flags().StringVarP(&delimiter, "delimiter", "d", ",", "delimiter for splitting lines (default: comma)")
+	cmd.Flags().StringVarP(&extract, "extract", "e", "", "extract values using regex pattern (use capture group for substring)")
+	cmd.Flags().StringVar(&format, "format", "text", "output format: text, json, or csv")
+	cmd.Flags().BoolVarP(&ignoreFQDN, "ignore-fqdn", "f", false, "strip FQDN suffixes (keep only hostname before first dot)")
+	cmd.Flags().StringVarP(&output, "output", "o", "", "write output to file instead of stdout")
+	cmd.Flags().BoolVarP(&pipe, "pipe", "p", false, "suppress headers for piped output")
+	cmd.Flags().BoolVar(&stats, "stats", false, "show statistics about the file sets (size, overlap, unique elements)")
+	cmd.Flags().StringVar(&trimPrefix, "trim-prefix", "", "remove specified prefix from each line")
+	cmd.Flags().StringVar(&trimSuffix, "trim-suffix", "", "remove specified suffix from each line")
+	cmd.Flags().BoolP("intersection", "i", false, "show the intersection of the two files")
+	cmd.Flags().BoolP("union", "u", false, "show the union of the two files")
+	cmd.Flags().BoolP("symmetric-difference", "s", false, "show the symmetric difference (XOR) of the two files")
+	cmd.MarkFlagsMutuallyExclusive("intersection", "union", "symmetric-difference")
+	cmd.MarkFlagsMutuallyExclusive("format", "count")
+	cmd.MarkFlagsMutuallyExclusive("format", "stats")
+	cmd.PersistentFlags().CountP("verbose", "v", "increase verbosity (-v=warn, -vv=info, -vvv=debug, -vvvv=trace)")
+
+	return cmd
+}
+
+func init() {
+	// Initialize the global rootCmd with a fresh command from the factory
+	rootCmd = newRootCmd()
 }
 
 // Execute runs the root command and exits with appropriate code.
@@ -493,25 +528,4 @@ func Execute() {
 	// Print actual errors (SilenceErrors is true, so we do it manually)
 	fmt.Fprintln(os.Stderr, "Error:", err)
 	os.Exit(exitError)
-}
-
-func init() {
-	rootCmd.Flags().BoolVarP(&caseSensitive, "case-sensitive", "c", false, "preserve case during comparison (default: case-insensitive)")
-	rootCmd.Flags().BoolVar(&count, "count", false, "output only the count of results instead of the elements")
-	rootCmd.Flags().StringVarP(&delimiter, "delimiter", "d", ",", "delimiter for splitting lines (default: comma)")
-	rootCmd.Flags().StringVarP(&extract, "extract", "e", "", "extract values using regex pattern (use capture group for substring)")
-	rootCmd.Flags().StringVar(&format, "format", "text", "output format: text, json, or csv")
-	rootCmd.Flags().BoolVarP(&ignoreFQDN, "ignore-fqdn", "f", false, "strip FQDN suffixes (keep only hostname before first dot)")
-	rootCmd.Flags().StringVarP(&output, "output", "o", "", "write output to file instead of stdout")
-	rootCmd.Flags().BoolVarP(&pipe, "pipe", "p", false, "suppress headers for piped output")
-	rootCmd.Flags().BoolVar(&stats, "stats", false, "show statistics about the file sets (size, overlap, unique elements)")
-	rootCmd.Flags().StringVar(&trimPrefix, "trim-prefix", "", "remove specified prefix from each line")
-	rootCmd.Flags().StringVar(&trimSuffix, "trim-suffix", "", "remove specified suffix from each line")
-	rootCmd.Flags().BoolP("intersection", "i", false, "show the intersection of the two files")
-	rootCmd.Flags().BoolP("union", "u", false, "show the union of the two files")
-	rootCmd.Flags().BoolP("symmetric-difference", "s", false, "show the symmetric difference (XOR) of the two files")
-	rootCmd.MarkFlagsMutuallyExclusive("intersection", "union", "symmetric-difference")
-	rootCmd.MarkFlagsMutuallyExclusive("format", "count")
-	rootCmd.MarkFlagsMutuallyExclusive("format", "stats")
-	rootCmd.PersistentFlags().CountP("verbose", "v", "increase verbosity (-v=warn, -vv=info, -vvv=debug, -vvvv=trace)")
 }
