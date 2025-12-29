@@ -1,3 +1,9 @@
+## v2.0.1 (2025-12-29)
+
+### Refactor
+
+- eliminate global state in root command and improve test isolation; enhance logger initialization and testing
+
 ## v2.0.0 (2025-12-28)
 
 ### Feat
