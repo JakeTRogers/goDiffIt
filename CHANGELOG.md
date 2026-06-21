@@ -1,3 +1,9 @@
+## v2.0.2 (2026-06-21)
+
+### Fix
+
+- **deps**: bump github.com/rs/zerolog from 1.34.0 to 1.35.1
+
 ## v2.0.1 (2025-12-29)
 
 ### Refactor
