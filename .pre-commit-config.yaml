@@ -32,7 +32,7 @@ repos:
         types: [go]
         stages: [pre-commit]
   - repo: https://github.com/commitizen-tools/commitizen
-    rev: 205e71c26d6dd6a802ca674c9ae4d12f1103a9bb  # frozen: v4.16.4
+    rev: 6afcd8e9560ddf1b9a5032262a0be26540e85fb3  # frozen: v4.16.5
     hooks:
       - id: commitizen
         stages:
