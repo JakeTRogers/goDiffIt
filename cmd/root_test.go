@@ -127,11 +127,7 @@ func runCLIExpectError(t *testing.T, args []string) error {
 
 // makeSet creates a hashset from the given string values.
 func makeSet(values ...string) *hashset.Set[string] {
-	hs := hashset.New[string]()
-	for _, v := range values {
-		hs.Add(v)
-	}
-	return hs
+	return hashset.New(values...)
 }
 
 // makeResults creates a results struct for testing set operations.
@@ -710,15 +706,9 @@ func TestPrintSetOperations(t *testing.T) {
 			r := results{
 				fileSetA:  fileSet{path: "A", set: hashset.New[string]()},
 				fileSetB:  fileSet{path: "B", set: hashset.New[string]()},
-				diffAB:    hashset.New[string](),
-				diffBA:    hashset.New[string](),
+				diffAB:    makeSet(tt.diffAB...),
+				diffBA:    makeSet(tt.diffBA...),
 				operation: tt.operation,
-			}
-			for _, v := range tt.diffAB {
-				r.diffAB.Add(v)
-			}
-			for _, v := range tt.diffBA {
-				r.diffBA.Add(v)
 			}
 
 			output := captureOutput(t, func() {
