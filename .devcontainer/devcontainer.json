@@ -7,6 +7,11 @@
     "securityOpt": [
         "no-new-privileges=false"
     ],
+    "mounts": [
+        "source=devcntr-${localWorkspaceFolderBasename}-home,target=/home/vscode,type=volume",
+        "source=${localEnv:HOME}/.claude,target=/home/vscode/.claude,type=bind"
+    ],
+    "initializeCommand": "mkdir -p \"${localEnv:HOME}/.claude\"",
     "customizations": {
         "vscode": {
             "settings": {
